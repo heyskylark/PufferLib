@@ -162,7 +162,7 @@ MAKE_FUNCTIONS = {
     'spaces': make_spaces,
     'multiagent': make_multiagent,
     'slimevolley': 'SlimeVolley',
-    'tictactoe': 'TicTacToe',
+    'tictactoe': 'make_tictactoe',
 }
 
 def env_creator(name='squared', *args, **kwargs):

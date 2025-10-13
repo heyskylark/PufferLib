@@ -10,11 +10,6 @@
 #define DONE 1
 #define NOT_DONE 0
 
-// Reward shaping
-#define WIN_TIME_PENALTY 0.05f   // subtract per time step on wins
-#define DRAW_PENALTY 0.25f       // slight negative for draws
-#define STEP_PENALTY 0.01f       // per-step penalty to encourage faster games
-
 typedef struct Log Log;
 struct Log {
     float perf;
@@ -103,6 +98,7 @@ static inline void c_reset(CTicTacToe* env) {
     env->rewards[0] = 0.0f;
     for (int i = 0; i < 9; i++) env->board[i] = EMPTY;
     // Randomize starting player to balance selfplay
+    // TODO: Handle random on the py trainer
     env->current_player = rand() & 1; // 0 or 1
     ttt_compute_observation(env);
 }
@@ -115,7 +111,7 @@ static inline void ttt_end_game(CTicTacToe* env, float reward) {
 
 static inline void c_step(CTicTacToe* env) {
     env->tick += 1;
-    env->rewards[0] = -STEP_PENALTY;
+    env->rewards[0] = 0.0f;
 
     if (env->terminals[0] == DONE) {
         c_reset(env);
@@ -133,23 +129,20 @@ static inline void c_step(CTicTacToe* env) {
 
     // Place mark for current player
     float mark = (env->current_player == 0) ? PLAYER_X : PLAYER_O;
+    float opponent = (env->current_player == 0) ? PLAYER_O : PLAYER_X;
     env->board[action] = mark;
 
     int st = ttt_check_winner(env->board);
     if (st == 1) { // X wins
-        float shaped = 1.0f - WIN_TIME_PENALTY * (float)env->tick;
-        if (shaped < 0.0f) shaped = 0.0f;
-        ttt_end_game(env, (mark == PLAYER_X) ? shaped : -1.0f);
+        ttt_end_game(env, (mark == PLAYER_X) ? 1.0f : -1.0f);
         ttt_compute_observation(env);
         return;
     } else if (st == -1) { // O wins
-        float shaped = 1.0f - WIN_TIME_PENALTY * (float)env->tick;
-        if (shaped < 0.0f) shaped = 0.0f;
-        ttt_end_game(env, (mark == PLAYER_O) ? shaped : -1.0f);
+        ttt_end_game(env, (mark == PLAYER_O) ? 1.0f : -1.0f);
         ttt_compute_observation(env);
         return;
     } else if (st == 2) { // draw
-        ttt_end_game(env, -DRAW_PENALTY);
+        ttt_end_game(env, 0.0f);
         ttt_compute_observation(env);
         return;
     }
