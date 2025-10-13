@@ -100,6 +100,7 @@ class PuffeRL:
         self.truncations = torch.zeros(segments, horizon, device=device)
         self.ratio = torch.ones(segments, horizon, device=device)
         self.importance = torch.ones(segments, horizon, device=device)
+        self.agent_masks = torch.zeros(segments, horizon, device=device)
         self.ep_lengths = torch.zeros(total_agents, device=device, dtype=torch.int32)
         self.ep_indices = torch.arange(total_agents, device=device, dtype=torch.int32)
         self.free_idx = total_agents
@@ -171,8 +172,10 @@ class PuffeRL:
 
         # Learning rate scheduler
         epochs = config['total_timesteps'] // config['batch_size']
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        if epochs <= 0:
+            epochs = 1
         self.total_epochs = epochs
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
         # Automatic mixed precision
         precision = config['precision']
@@ -198,6 +201,28 @@ class PuffeRL:
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+        league_cfg = config.get('league', {})
+        env_name = config.get('env', '')
+        self.league = None
+        if league_cfg and league_cfg.get('enabled', False) and env_name:
+            module_name = env_name.replace('puffer_', '')
+            try:
+                league_module = importlib.import_module(f'pufferlib.ocean.{module_name}.league')
+                LeagueManager = getattr(league_module, 'LeagueManager')
+                self.league = LeagueManager(
+                    league_cfg,
+                    self.uncompiled_policy,
+                    self.vecenv,
+                    device=config['device'],
+                    data_dir=config['data_dir'],
+                    env_name=env_name,
+                )
+            except Exception as exc:
+                warnings.warn(f'League disabled: {exc}', RuntimeWarning)
+                self.league = None
+        else:
+            self.league = None
+
         self.print_dashboard(clear=True)
 
     @property
@@ -231,67 +256,95 @@ class PuffeRL:
             o, r, d, t, info, env_id, mask = self.vecenv.recv()
 
             profile('eval_misc', epoch)
-            env_id = slice(env_id[0], env_id[-1] + 1)
+            env_slice = slice(env_id[0], env_id[-1] + 1)
+            done_array = np.asarray(np.logical_or(d, t), dtype=bool)
+            mask_array = np.asarray(mask, dtype=bool)
 
-            done_mask = d + t # TODO: Handle truncations separately
-            self.global_step += int(mask.sum())
+            league = self.league
+            env_idx = None
+            if league is not None:
+                global_role_mask = league.get_global_mask()[env_slice]
+                mask_array = np.logical_and(mask_array, global_role_mask)
+                env_idx = league.env_from_index(env_slice.start)
+
+            self.global_step += int(mask_array.sum())
 
             profile('eval_copy', epoch)
-            o = torch.as_tensor(o)
-            o_device = o.to(device)#, non_blocking=True)
-            r = torch.as_tensor(r).to(device)#, non_blocking=True)
-            d = torch.as_tensor(d).to(device)#, non_blocking=True)
+            o_tensor = torch.as_tensor(o)
+            o_device = o_tensor.to(device)
+            r_tensor = torch.as_tensor(r).to(device)
+            d_tensor = torch.as_tensor(d).to(device)
+            mask_tensor = torch.as_tensor(mask_array, device=device)
 
             profile('eval_forward', epoch)
             with torch.no_grad(), self.amp_context:
                 state = dict(
-                    reward=r,
-                    done=d,
-                    env_id=env_id,
-                    mask=mask,
+                    reward=r_tensor,
+                    done=d_tensor,
+                    env_id=env_slice,
+                    mask=mask_tensor,
                 )
 
                 if config['use_rnn']:
-                    state['lstm_h'] = self.lstm_h[env_id.start]
-                    state['lstm_c'] = self.lstm_c[env_id.start]
+                    state['lstm_h'] = self.lstm_h[env_slice.start]
+                    state['lstm_c'] = self.lstm_c[env_slice.start]
 
                 logits, value = self.policy.forward_eval(o_device, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
-                r = torch.clamp(r, -1, 1)
+                r_tensor = torch.clamp(r_tensor, -1, 1)
+
+                if league is not None:
+                    action = league.override_actions(action, o_device, env_idx, env_slice)
 
             profile('eval_copy', epoch)
             with torch.no_grad():
                 if config['use_rnn']:
-                    self.lstm_h[env_id.start] = state['lstm_h']
-                    self.lstm_c[env_id.start] = state['lstm_c']
+                    self.lstm_h[env_slice.start] = state['lstm_h']
+                    self.lstm_c[env_slice.start] = state['lstm_c']
 
                 # Fast path for fully vectorized envs
-                l = self.ep_lengths[env_id.start].item()
-                batch_rows = slice(self.ep_indices[env_id.start].item(), 1+self.ep_indices[env_id.stop - 1].item())
+                l = self.ep_lengths[env_slice.start].item()
+                batch_rows = slice(
+                    self.ep_indices[env_slice.start].item(),
+                    1 + self.ep_indices[env_slice.stop - 1].item(),
+                )
 
                 if config['cpu_offload']:
-                    self.observations[batch_rows, l] = o
+                    self.observations[batch_rows, l] = o_tensor
                 else:
                     self.observations[batch_rows, l] = o_device
 
                 self.actions[batch_rows, l] = action
                 self.logprobs[batch_rows, l] = logprob
-                self.rewards[batch_rows, l] = r
-                self.terminals[batch_rows, l] = d.float()
+                self.rewards[batch_rows, l] = r_tensor
+                self.terminals[batch_rows, l] = d_tensor.float()
                 self.values[batch_rows, l] = value.flatten()
+                mask_slice_tensor = torch.as_tensor(
+                    mask_array, device=device, dtype=torch.float32
+                )
+                self.agent_masks[batch_rows, l] = mask_slice_tensor
 
-                # Note: We are not yet handling masks in this version
-                self.ep_lengths[env_id] += 1
+                self.ep_lengths[env_slice] += 1
                 if l+1 >= config['bptt_horizon']:
-                    num_full = env_id.stop - env_id.start
-                    self.ep_indices[env_id] = self.free_idx + torch.arange(num_full, device=config['device']).int()
-                    self.ep_lengths[env_id] = 0
+                    num_full = env_slice.stop - env_slice.start
+                    self.ep_indices[env_slice] = self.free_idx + torch.arange(
+                        num_full, device=config['device']
+                    ).int()
+                    self.ep_lengths[env_slice] = 0
                     self.free_idx += num_full
                     self.full_rows += num_full
 
-                action = action.cpu().numpy()
+                action_np = action.detach().cpu().numpy()
                 if isinstance(logits, torch.distributions.Normal):
-                    action = np.clip(action, self.vecenv.action_space.low, self.vecenv.action_space.high)
+                    action_np = np.clip(
+                        action_np,
+                        self.vecenv.action_space.low,
+                        self.vecenv.action_space.high,
+                    )
+
+            if league is not None:
+                rewards_slice = r_tensor.detach().cpu().numpy()
+                league.on_step(env_idx, rewards_slice, done_array, self.stats)
 
             profile('eval_misc', epoch)
             for i in info:
@@ -304,7 +357,7 @@ class PuffeRL:
                         self.stats[k].append(v)
 
             profile('env', epoch)
-            self.vecenv.send(action)
+            self.vecenv.send(action_np)
 
         profile('eval_misc', epoch)
         self.free_idx = self.total_agents
@@ -360,53 +413,67 @@ class PuffeRL:
             if not config['use_rnn']:
                 mb_obs = mb_obs.reshape(-1, *self.vecenv.single_observation_space.shape)
 
-            state = dict(
-                action=mb_actions,
-                lstm_h=None,
-                lstm_c=None,
-            )
-
+            state = dict(action=mb_actions, lstm_h=None, lstm_c=None)
             logits, newvalue = self.policy(mb_obs, state)
-            actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
+            actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(
+                logits, action=mb_actions
+            )
 
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
             logratio = newlogprob - mb_logprobs
             ratio = logratio.exp()
-            self.ratio[idx] = ratio.detach()
+            mb_masks = self.agent_masks[idx]
+            mask_sum = mb_masks.sum()
+            mask_norm = torch.clamp(mask_sum, min=1.0)
+            mask_bool = mb_masks.bool()
+            self.ratio[idx] = torch.where(mask_bool, ratio.detach(), self.ratio[idx])
 
             with torch.no_grad():
-                old_approx_kl = (-logratio).mean()
-                approx_kl = ((ratio - 1) - logratio).mean()
-                clipfrac = ((ratio - 1.0).abs() > config['clip_coef']).float().mean()
+                def _masked_mean(tensor):
+                    return (tensor * mb_masks).sum() / mask_norm
+
+                old_approx_kl = _masked_mean(-logratio)
+                approx_kl = _masked_mean((ratio - 1) - logratio)
+                clipfrac = _masked_mean(
+                    ((ratio - 1.0).abs() > config['clip_coef']).float()
+                )
 
             adv = advantages[idx]
-            adv = compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
-                ratio, adv, config['gamma'], config['gae_lambda'],
-                config['vtrace_rho_clip'], config['vtrace_c_clip'])
+            adv = compute_puff_advantage(
+                mb_values, mb_rewards, mb_terminals, ratio, adv,
+                config['gamma'], config['gae_lambda'],
+                config['vtrace_rho_clip'], config['vtrace_c_clip']
+            )
             adv = mb_advantages
-            adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8)
+            adv_mean = (adv * mb_masks).sum() / mask_norm
+            adv_std = torch.sqrt(
+                ((adv - adv_mean) ** 2 * mb_masks).sum() / mask_norm + 1e-8
+            )
+            adv = mb_prio * (adv - adv_mean) / (adv_std + 1e-8)
+            adv = adv * mb_masks
 
-            # Losses
             pg_loss1 = -adv * ratio
             pg_loss2 = -adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-            pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+            pg_terms = torch.max(pg_loss1, pg_loss2)
+            pg_loss = pg_terms.sum() / mask_norm
 
             newvalue = newvalue.view(mb_returns.shape)
             v_clipped = mb_values + torch.clamp(newvalue - mb_values, -vf_clip, vf_clip)
             v_loss_unclipped = (newvalue - mb_returns) ** 2
             v_loss_clipped = (v_clipped - mb_returns) ** 2
-            v_loss = 0.5*torch.max(v_loss_unclipped, v_loss_clipped).mean()
+            v_loss = 0.5 * (torch.max(v_loss_unclipped, v_loss_clipped) * mb_masks).sum() / mask_norm
 
-            entropy_loss = entropy.mean()
+            entropy = entropy.reshape(mb_logprobs.shape)
+            entropy_loss = (entropy * mb_masks).sum() / mask_norm
 
-            loss = pg_loss + config['vf_coef']*v_loss - config['ent_coef']*entropy_loss
-            self.amp_context.__enter__() # TODO: AMP needs some debugging
+            loss = pg_loss + config['vf_coef'] * v_loss - config['ent_coef'] * entropy_loss
+            self.amp_context.__enter__()  # TODO: AMP needs some debugging
 
-            # This breaks vloss clipping?
-            self.values[idx] = newvalue.detach().float()
+            self.values[idx] = torch.where(
+                mask_bool, newvalue.detach().float(), self.values[idx]
+            )
 
-            # Logging
             profile('train_misc', epoch)
             losses['policy_loss'] += pg_loss.item() / self.total_minibatches
             losses['value_loss'] += v_loss.item() / self.total_minibatches
@@ -414,7 +481,9 @@ class PuffeRL:
             losses['old_approx_kl'] += old_approx_kl.item() / self.total_minibatches
             losses['approx_kl'] += approx_kl.item() / self.total_minibatches
             losses['clipfrac'] += clipfrac.item() / self.total_minibatches
-            losses['importance'] += ratio.mean().item() / self.total_minibatches
+            losses['importance'] += (
+                (ratio * mb_masks).sum() / mask_norm
+            ).item() / self.total_minibatches
 
             # Learn on accumulated minibatches
             profile('learn', epoch)
@@ -451,6 +520,9 @@ class PuffeRL:
         if self.epoch % config['checkpoint_interval'] == 0 or done_training:
             self.save_checkpoint()
             self.msg = f'Checkpoint saved at update {self.epoch}'
+
+        if self.league is not None:
+            self.league.maybe_snapshot(self.epoch, self.global_step, self.uncompiled_policy)
 
         return logs
 
@@ -528,6 +600,19 @@ class PuffeRL:
         state_path = os.path.join(path, 'trainer_state.pt')
         torch.save(state, state_path + '.tmp')
         os.replace(state_path + '.tmp', state_path)
+
+        max_ckpts = self.config.get('max_checkpoints', None)
+        if max_ckpts is not None and max_ckpts > 0:
+            pattern = os.path.join(path, f"model_{self.config['env']}_*.pt")
+            checkpoint_files = sorted(glob.glob(pattern))
+            excess = len(checkpoint_files) - max_ckpts
+            if excess > 0:
+                for ckpt in checkpoint_files[:excess]:
+                    try:
+                        os.remove(ckpt)
+                    except OSError:
+                        pass
+
         return model_path
 
     def print_dashboard(self, clear=False, idx=[0],
@@ -904,7 +989,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     elif args['wandb']:
         logger = WandbLogger(args)
 
-    train_config = dict(**args['train'], env=env_name)
+    train_config = dict(**args['train'], env=env_name, league=args.get('league', {}))
     pufferl = PuffeRL(train_config, vecenv, policy, logger)
 
     all_logs = []

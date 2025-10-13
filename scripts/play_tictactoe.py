@@ -64,89 +64,123 @@ def main():
     else:
         print('No checkpoint found; playing with randomly initialized policy.')
 
-    ob, _ = vecenv.reset()
     driver = vecenv.driver_env
+    game = driver.env.aec_env
 
-    # Prepare RNN state if needed
-    use_rnn = cfg['train'].get('use_rnn', False)
-    state = {}
-    if use_rnn and hasattr(policy, 'hidden_size'):
-        num_agents = getattr(vecenv, 'num_agents', ob.shape[0])
-        state = dict(
-            lstm_h=torch.zeros(num_agents, policy.hidden_size, device=args.device),
-            lstm_c=torch.zeros(num_agents, policy.hidden_size, device=args.device),
-        )
+    def stack_observations():
+        return np.stack([game.observe('X'), game.observe('O')], dtype=np.float32)
 
-    # Decide who is X (0) vs O (1). Our env alternates internally, but we can
-    # interpret human moves as needed. Human goes first => X.
-    human_is_x = args.go_first
-
-    def get_legal(board):
-        # board is [-1,0,1] floats
+    def get_legal_moves(mask, board):
+        if mask is not None:
+            return np.flatnonzero(mask).astype(int).tolist()
         return [i for i, v in enumerate(board) if v == 0.0]
 
-    while True:
-        render = driver.render()
-        # Poll current player from C binding (optional)
-        # info = driver.get() if exposed; else infer from board parity
-        board = ob[0].astype(np.float32)
-        num_filled = (board != 0).sum()
-        current_is_x = (num_filled % 2 == 0)
+    def print_board(board):
+        symbols = {1.0: 'X', -1.0: 'O', 0.0: ' '}
+        rows = []
+        for r in range(3):
+            row = [symbols.get(board[3*r + c], ' ') for c in range(3)]
+            rows.append(' | '.join(row))
+        separator = '\n---------\n'
+        print('\nBoard:')
+        print(separator.join(rows))
 
-        human_turn = (current_is_x and human_is_x) or ((not current_is_x) and (not human_is_x))
-        legal = get_legal(board)
+    def prompt_human(agent, board, legal_moves):
+        print('\nBoard indices:')
+        print('0 1 2\n3 4 5\n6 7 8')
+        print_board(board)
+        print(f'{agent} legal moves: {legal_moves}')
+        while True:
+            try:
+                mv = int(input(f'Your move for {agent} [0-8]: ').strip())
+            except KeyboardInterrupt:
+                print()
+                sys.exit(0)
+            except Exception:
+                mv = -1
+            if mv in legal_moves:
+                return mv
+            print('Invalid move. Try again.')
 
-        if human_turn:
-            print('\nBoard indices:')
-            print('0 1 2\n3 4 5\n6 7 8')
-            print(f'Legal moves: {legal}')
-            while True:
-                try:
-                    mv = int(input('Your move [0-8]: ').strip())
-                except KeyboardInterrupt:
-                    sys.exit(0)
-                except Exception:
-                    mv = -1
-                if mv in legal:
-                    break
-                print('Invalid move. Try again.')
-            atn = np.array([mv], dtype=np.int32)
-        else:
-            with torch.no_grad():
-                t = torch.as_tensor(ob, device=args.device)
-                logits, value = policy.forward_eval(t, state)
-                # sample greedy over legal moves only
-                # prefer vecenv.single_action_space if present
-                action_space = getattr(vecenv, 'single_action_space', None)
-                if action_space is not None and hasattr(action_space, 'n'):
-                    probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
-                    legal_arr = np.array(legal, dtype=np.int64)
-                    if legal_arr.size == 0:
-                        mv = int(np.argmax(probs))
-                    else:
-                        mv = int(legal_arr[np.argmax(probs[legal_arr])])
+    def pick_ai_move(logits, legal_moves):
+        if not legal_moves:
+            return 0
+        logits = logits.detach().cpu().float()
+        masked = torch.full_like(logits, -1e9)
+        masked[legal_moves] = logits[legal_moves]
+        return int(torch.argmax(masked).item())
+
+    def init_state():
+        use_rnn = cfg['train'].get('use_rnn', False)
+        if not use_rnn or not hasattr(policy, 'hidden_size'):
+            return {}
+        num_agents = driver.num_agents
+        device = args.device
+        return dict(
+            lstm_h=torch.zeros(num_agents, policy.hidden_size, device=device),
+            lstm_c=torch.zeros(num_agents, policy.hidden_size, device=device),
+        )
+
+    human_is_x = args.go_first
+    human_agent = 'X' if human_is_x else 'O'
+
+    try:
+        while True:
+            vecenv.reset()
+            state = init_state()
+
+            while game.agents:
+                driver.render()
+                if getattr(game, '_pending_terminal', False):
+                    game.step(None)
+                    continue
+
+                agent = game.agent_selection
+                _, _, terminated, truncated, info = game.last()
+
+                if terminated or truncated:
+                    game.step(None)
+                    continue
+
+                board = game.observe('X').astype(np.float32)
+                legal = get_legal_moves(info.get('action_mask'), board)
+
+                obs_stack = stack_observations()
+                obs_tensor = torch.as_tensor(obs_stack, device=args.device)
+                with torch.no_grad():
+                    logits, _ = policy.forward_eval(obs_tensor, state)
+
+                if agent == human_agent:
+                    mv = prompt_human(agent, board, legal)
                 else:
-                    mv = int(np.random.choice(legal)) if len(legal) > 0 else 0
-            atn = np.array([mv], dtype=np.int32)
-            print(f'AI plays: {mv}')
+                    agent_idx = 0 if agent == 'X' else 1
+                    mv = pick_ai_move(logits[agent_idx], legal)
+                    print(f'AI ({agent}) plays: {mv}')
 
-        ob, rew, done, trunc, info = vecenv.step(atn)
-        if done[0] or trunc[0]:
-            render = driver.render()
-            r = float(rew[0])
-            if r > 0:
-                print('Result: You win!' if human_turn else 'Result: AI wins!')
-            elif r < 0:
-                print('Result: AI wins!' if human_turn else 'Result: You win!')
+                game.step(int(mv))
+
+            driver.render()
+            x_reward = float(game.rewards.get('X', 0.0))
+            if x_reward > 0:
+                winner = 'X'
+            elif x_reward < 0:
+                winner = 'O'
             else:
+                winner = None
+
+            if winner is None:
                 print('Result: Draw')
+            elif winner == human_agent:
+                print('Result: You win!')
+            else:
+                print('Result: AI wins!')
+
             choice = input('Play again? [y/N]: ').strip().lower()
             if choice != 'y':
                 break
-            ob, _ = vecenv.reset()
+    finally:
+        vecenv.close()
 
 
 if __name__ == '__main__':
     main()
-
-

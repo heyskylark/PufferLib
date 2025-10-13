@@ -136,21 +136,24 @@ class TicTacToe(AECEnv):
 
         if done:
             # Terminate current agent who made the game-ending move
-            self.terminations[self._agent_selection] = True
-            if self._agent_selection in self.agents:
-                self.agents.remove(self._agent_selection)
+            acting_agent = self._agent_selection
+            opponent_idx = 1 if acting_agent == 'X' else 0
+            opponent_agent = self.possible_agents[opponent_idx]
+            self.terminations[acting_agent] = True
+            if acting_agent in self.agents:
+                self.agents.remove(acting_agent)
 
-            # Set rewards immediately
-            self.rewards['X'] = r
-            self.rewards['O'] = -r
-            self._cumulative_rewards['X'] += r
-            self._cumulative_rewards['O'] += -r
+            # Rewards are from the acting agent's perspective; propagate symmetrically
+            self.rewards[acting_agent] = r
+            self.rewards[opponent_agent] = -r
+            self._cumulative_rewards[acting_agent] += r
+            self._cumulative_rewards[opponent_agent] += -r
 
             # Mark pending so other agent terminates on their step
             self._pending_terminal = True
 
             # Switch to other agent
-            self._agent_selection = self.possible_agents[1 if self._agent_selection == 'X' else 0]
+            self._agent_selection = opponent_agent
         else:
             # Game continues - switch to next player
             info = binding.env_get(self._handle) or {}
