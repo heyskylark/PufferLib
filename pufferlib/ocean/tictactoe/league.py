@@ -6,6 +6,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+import shutil
 
 import numpy as np
 import torch
@@ -38,7 +39,7 @@ class Snapshot:
 class LeagueManager:
     """Single-policy league with ELO-managed opponent pool for TicTacToe."""
 
-    def __init__(self, config, policy, vecenv, device, data_dir, env_name):
+    def __init__(self, config, policy, vecenv, device, data_dir, env_name, run_id=None):
         self.config = config
         self.policy_template = policy
         self.hero_device = torch.device(device)
@@ -65,8 +66,15 @@ class LeagueManager:
         self.games_since_snapshot = 0
         self.last_snapshot_step = 0
 
-        self.league_dir = Path(data_dir) / 'league' / env_name
-        self.league_dir.mkdir(parents=True, exist_ok=True)
+        base_dir = Path(data_dir) / 'league' / env_name
+        if run_id is not None:
+            self.league_dir = base_dir / str(run_id)
+            if self.league_dir.exists():
+                shutil.rmtree(self.league_dir, ignore_errors=True)
+            self.league_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.league_dir = base_dir
+            self.league_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_counter = 0
         self.snapshots: List[Snapshot] = []
 

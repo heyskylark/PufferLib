@@ -209,6 +209,7 @@ class PuffeRL:
             try:
                 league_module = importlib.import_module(f'pufferlib.ocean.{module_name}.league')
                 LeagueManager = getattr(league_module, 'LeagueManager')
+                run_id = getattr(self.logger, 'run_id', None)
                 self.league = LeagueManager(
                     league_cfg,
                     self.uncompiled_policy,
@@ -216,6 +217,7 @@ class PuffeRL:
                     device=config['device'],
                     data_dir=config['data_dir'],
                     env_name=env_name,
+                    run_id=run_id,
                 )
             except Exception as exc:
                 warnings.warn(f'League disabled: {exc}', RuntimeWarning)

@@ -4,6 +4,7 @@ from pettingzoo import AECEnv
 import pufferlib
 
 from pufferlib.ocean.tictactoe import binding
+from pufferlib.emulation import TurnBasedParallelEnv
 
 
 class TicTacToe(AECEnv):
@@ -20,11 +21,20 @@ class TicTacToe(AECEnv):
         'is_parallelizable': True
     }
 
-    def __init__(self, seed: int | None = None, flip_perspective: bool = True) -> None:
+    def __init__(
+        self,
+        seed: int | None = None,
+        flip_perspective: bool = True,
+        random_open_prob: float = 0.0,
+        random_open_depth: int = 0,
+    ) -> None:
         super().__init__()
         self.possible_agents = ['X', 'O']
         self.flip_perspective = flip_perspective
         self._pending_terminal = False
+        self.random_open_prob = float(random_open_prob)
+        self.random_open_prob = max(0.0, min(1.0, self.random_open_prob))
+        self.random_open_depth = max(0, int(random_open_depth))
 
         # C binding arrays
         self._obs = np.zeros(9, dtype=np.float32)
@@ -39,7 +49,9 @@ class TicTacToe(AECEnv):
             self._rewards,
             self._terminals,
             self._truncations,
-            int(seed or 0)
+            int(seed or 0),
+            random_open_prob=self.random_open_prob,
+            random_open_depth=self.random_open_depth,
         )
 
         # AEC state
@@ -89,12 +101,14 @@ class TicTacToe(AECEnv):
         """
         binding.env_reset(self._handle, int(seed or 0))
 
-        # Get starting player from C environment
+        # Get starting player from C environment and rotate active order so parallel wrapper stays in sync
         info = binding.env_get(self._handle) or {}
         cp_idx = int(info.get('current_player', 0))
-        self._agent_selection = self.possible_agents[cp_idx]
+        starting_agent = self.possible_agents[cp_idx]
+        other_agent = self.possible_agents[1 - cp_idx]
+        self._agent_selection = starting_agent
 
-        self.agents = self.possible_agents[:]
+        self.agents = [starting_agent, other_agent]
         self.rewards = {agent: 0.0 for agent in self.possible_agents}
         self._cumulative_rewards = {agent: 0.0 for agent in self.possible_agents}
         self.terminations = {agent: False for agent in self.possible_agents}
@@ -193,8 +207,11 @@ class TicTacToe(AECEnv):
                 self.infos[agent] = {}
 
 def make_tictactoe(buf=None, **kwargs):
-    from pettingzoo.utils.conversions import aec_to_parallel
-    env = TicTacToe(seed=42, flip_perspective=True)
-    env = aec_to_parallel(env)
+    kwargs = dict(kwargs)
+    seed = kwargs.pop('seed', 42)
+    flip = kwargs.pop('flip_perspective', True)
+    kwargs.pop('num_envs', None)
+    env = TicTacToe(seed=seed, flip_perspective=flip, **kwargs)
+    env = TurnBasedParallelEnv(env)
     env = pufferlib.MultiagentEpisodeStats(env)
     return pufferlib.emulation.PettingZooPufferEnv(env=env, buf=buf)

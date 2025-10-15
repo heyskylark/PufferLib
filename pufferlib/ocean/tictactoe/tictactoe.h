@@ -35,6 +35,10 @@ struct CTicTacToe {
     float board[9];        // 3x3 flattened
     int current_player;    // 0 == X (PLAYER_X), 1 == O (PLAYER_O)
     int tick;
+
+    // Random opening configuration
+    float random_open_prob;
+    int random_open_depth;
 };
 
 static inline void ttt_allocate(CTicTacToe* env) {
@@ -92,15 +96,83 @@ static inline void c_close(CTicTacToe* env) {
     }
 }
 
+static inline int ttt_apply_random_opening(CTicTacToe* env) {
+    if (env->random_open_depth <= 0 || env->random_open_prob <= 0.0f) {
+        return 0;
+    }
+
+    float sample = (float)rand() / (float)RAND_MAX;
+    if (sample >= env->random_open_prob) {
+        return 0;
+    }
+
+    int max_moves = env->random_open_depth;
+    if (max_moves > 8) {
+        max_moves = 8;
+    }
+    int moves = 1 + (max_moves > 1 ? rand() % max_moves : 0);
+
+    for (int attempt = 0; attempt < 8; attempt++) {
+        for (int i = 0; i < 9; i++) {
+            env->board[i] = EMPTY;
+        }
+
+        int current = rand() & 1;
+        int moves_placed = 0;
+        int invalid = 0;
+
+        for (int m = 0; m < moves; m++) {
+            int empties[9];
+            int count = 0;
+            for (int i = 0; i < 9; i++) {
+                if (env->board[i] == EMPTY) {
+                    empties[count++] = i;
+                }
+            }
+
+            if (count == 0) {
+                invalid = 1;
+                break;
+            }
+
+            int idx = empties[rand() % count];
+            env->board[idx] = (current == 0) ? PLAYER_X : PLAYER_O;
+            moves_placed++;
+
+            int status = ttt_check_winner(env->board);
+            if (status == 1 || status == -1 || status == 2) {
+                invalid = 1;
+                break;
+            }
+
+            current ^= 1;
+        }
+
+        if (!invalid) {
+            env->current_player = current;
+            env->tick = moves_placed;
+            ttt_compute_observation(env);
+            return 1;
+        }
+    }
+
+    for (int i = 0; i < 9; i++) {
+        env->board[i] = EMPTY;
+    }
+    env->tick = 0;
+    return 0;
+}
+
 static inline void c_reset(CTicTacToe* env) {
     env->tick = 0;
     env->terminals[0] = NOT_DONE;
     env->rewards[0] = 0.0f;
     for (int i = 0; i < 9; i++) env->board[i] = EMPTY;
-    // Randomize starting player to balance selfplay
-    // TODO: Handle random on the py trainer
-    env->current_player = rand() & 1; // 0 or 1
-    ttt_compute_observation(env);
+    if (!ttt_apply_random_opening(env)) {
+        // Randomize starting player to balance selfplay
+        env->current_player = rand() & 1; // 0 or 1
+        ttt_compute_observation(env);
+    }
 }
 
 static inline void ttt_end_game(CTicTacToe* env, float reward) {

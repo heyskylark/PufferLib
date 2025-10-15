@@ -9,6 +9,7 @@ import inspect
 import pufferlib
 import pufferlib.spaces
 from pufferlib.spaces import Discrete, Tuple, Dict
+from pettingzoo.utils.env import ParallelEnv, AECEnv
 
 def emulate(struct, sample):
     if isinstance(sample, dict):
@@ -241,6 +242,102 @@ class GymnasiumPufferEnv(gymnasium.Env):
     def close(self):
         return self.env.close()
 
+class TurnBasedParallelEnv(ParallelEnv):
+    """
+    Adapter that exposes a turn-based AEC environment through the ParallelEnv API
+    while only requesting an action for the agent whose turn it currently is.
+    """
+
+    def __init__(self, aec_env):
+        if not isinstance(aec_env, AECEnv):
+            raise TypeError(
+                "TurnBasedParallelEnv expects a PettingZoo AEC environment; "
+                f"got {type(aec_env)}"
+            )
+
+        self.aec_env = aec_env
+        self.possible_agents = list(getattr(aec_env, "possible_agents", []))
+        self.metadata = dict(getattr(aec_env, "metadata", {}))
+        self.agents = list(self.possible_agents)
+
+    def observation_space(self, agent):
+        return self.aec_env.observation_space(agent)
+
+    def action_space(self, agent):
+        return self.aec_env.action_space(agent)
+
+    def reset(self, seed=None, options=None):
+        if options is not None:
+            self.aec_env.reset(seed=seed, options=options)
+        else:
+            self.aec_env.reset(seed=seed)
+
+        self.agents = list(self.aec_env.agents)
+        return self._current_observations()
+
+    def step(self, actions):
+        if not self.aec_env.agents:
+            # already terminal – return empty observations
+            empty = {}
+            rewards = {agent: 0.0 for agent in self.possible_agents}
+            terminations = {agent: True for agent in self.possible_agents}
+            truncations = {agent: False for agent in self.possible_agents}
+            infos = {agent: {} for agent in self.possible_agents}
+            return empty, rewards, terminations, truncations, infos
+
+        acting_agent = self.aec_env.agent_selection
+        if acting_agent not in actions:
+            raise KeyError(
+                f"No action provided for active agent '{acting_agent}' "
+                "in TurnBasedParallelEnv.step"
+            )
+
+        self.aec_env.step(actions[acting_agent])
+
+        # Auto-step agents that terminate/truncate without requiring an action
+        while self.aec_env.agents and (
+            self.aec_env.terminations[self.aec_env.agent_selection]
+            or self.aec_env.truncations[self.aec_env.agent_selection]
+        ):
+            self.aec_env.step(None)
+
+        self.agents = list(self.aec_env.agents)
+
+        observations, infos = self._current_observations()
+        rewards = {
+            agent: float(self.aec_env.rewards.get(agent, 0.0))
+            for agent in self.possible_agents
+        }
+        terminations = {
+            agent: bool(self.aec_env.terminations.get(agent, False))
+            for agent in self.possible_agents
+        }
+        truncations = {
+            agent: bool(self.aec_env.truncations.get(agent, False))
+            for agent in self.possible_agents
+        }
+
+        return observations, rewards, terminations, truncations, infos
+
+    def render(self):
+        return self.aec_env.render()
+
+    def close(self):
+        return self.aec_env.close()
+
+    def _current_observations(self):
+        observations = {}
+        infos = {}
+        if self.aec_env.agents:
+            active = self.aec_env.agent_selection
+            observations[active] = self.aec_env.observe(active)
+
+        for agent in self.possible_agents:
+            infos[agent] = dict(self.aec_env.infos.get(agent, {}))
+
+        return observations, infos
+
+
 class PettingZooPufferEnv:
     def __init__(self, env=None, env_creator=None, env_args=[], env_kwargs={}, buf=None, seed=0):
         self.env = make_object(env, env_creator, env_args, env_kwargs)
@@ -320,12 +417,14 @@ class PettingZooPufferEnv:
 
         # Call user featurizer and flatten the observations
         self.observations[:] = 0
+        self.masks[:] = False
         for i, agent in enumerate(self.possible_agents):
             if agent not in obs:
                 continue
 
             ob = obs[agent]
             self.mask[agent] = True
+            self.masks[i] = True
             if self.is_obs_emulated:
                 emulate(self.obs_struct[i], ob)
             else:
@@ -334,7 +433,6 @@ class PettingZooPufferEnv:
         self.rewards[:] = 0
         self.terminals[:] = False
         self.truncations[:] = False
-        self.masks[:] = True
         return self.dict_obs, info
 
     def step(self, actions):
@@ -380,6 +478,7 @@ class PettingZooPufferEnv:
         # TODO: Can add this assert once NMMO Horizon is ported to puffer
         # assert all(dones.values()) == (len(self.env.agents) == 0)
         self.mask = {k: False for k in self.possible_agents}
+        self.masks[:] = False
         self.rewards[:] = 0
         self.terminals[:] = True
         self.truncations[:] = False
@@ -395,6 +494,7 @@ class PettingZooPufferEnv:
 
             ob = obs[agent] 
             self.mask[agent] = True
+            self.masks[i] = True
             if self.is_obs_emulated:
                 emulate(self.obs_struct[i], ob)
             else:

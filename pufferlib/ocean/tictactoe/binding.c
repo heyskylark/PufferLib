@@ -5,6 +5,41 @@
 #include "../env_binding.h"
 
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
+    env->random_open_prob = 0.0f;
+    env->random_open_depth = 0;
+
+    if (kwargs && PyDict_Check(kwargs)) {
+        PyObject* prob_obj = PyDict_GetItemString(kwargs, "random_open_prob");
+        if (prob_obj) {
+            double prob = PyFloat_AsDouble(prob_obj);
+            if (PyErr_Occurred()) {
+                PyErr_Clear();
+            } else {
+                env->random_open_prob = (float)prob;
+            }
+        }
+
+        PyObject* depth_obj = PyDict_GetItemString(kwargs, "random_open_depth");
+        if (depth_obj) {
+            long depth = PyLong_AsLong(depth_obj);
+            if (PyErr_Occurred()) {
+                PyErr_Clear();
+            } else {
+                env->random_open_depth = (int)depth;
+            }
+        }
+    }
+
+    if (env->random_open_prob < 0.0f) {
+        env->random_open_prob = 0.0f;
+    } else if (env->random_open_prob > 1.0f) {
+        env->random_open_prob = 1.0f;
+    }
+
+    if (env->random_open_depth < 0) {
+        env->random_open_depth = 0;
+    }
+
     c_reset(env);
     return 0;
 }
