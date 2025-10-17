@@ -4,7 +4,7 @@ This roadmap turns the GPT-generated build plan (M0–M18) into actionable chunk
 
 | ID | Title | Core Outcome | Depends On |
 | --- | --- | --- | --- |
-| M0 | Data Autogen Wiring | Card converter integrated, card table loads into engine | None |
+| M0 | Data Autogen Wiring | JSON converter integrated, card table loads into engine | None |
 | M1 | Zone Layout & Instance Pool | All zones/containers + freelist structure | M0 |
 | M2 | Turn Pipeline Skeleton | Start/Main/End phases without actions | M1 |
 | M3 | Cost & Resource Handling | IKZ/tap/sacrifice cost enforcement | M2 |
@@ -28,11 +28,11 @@ This roadmap turns the GPT-generated build plan (M0–M18) into actionable chunk
 
 ### M0 — Data & Autogen Wiring
 - **Tasks**
-  - Run `tools/azuki_cards_convert.py` on `.codex/docs/azuki-tcg-cards.csv`.
-  - Integrate generated `cards_autogen.c/h` into build system.
-  - Implement `DeckList` loader referencing `CardId`.
-- **Deliverables**: Compiled engine referencing card table, `tests/test_autogen_smoke.c`.
-- **Validation**: Assert card count (e.g., 41 entries), spot-check Raizan/Surge definitions.
+  - Author `data/cards.azuki.json` using schema.
+  - Run `tools/azuki_cards_convert.py --format json` to emit `cards_autogen.c/h`.
+  - Integrate generated sources into build system.
+- **Deliverables**: Compiled engine referencing JSON-driven card table, `tests/test_autogen_smoke.c`.
+- **Validation**: Assert card counts (Raizan + Shao decks), spot-check leader/gate defs.
 
 ### M1 — Core State Layout
 - **Tasks**

@@ -1,14 +1,18 @@
 # Azuki Card Dataset Notes
 
 ## 1. Data Sources
-- **Primary CSV**: `.codex/docs/azuki-tcg-cards.csv`
-  - Contains 41 gameplay cards + IKZ resources (as of 2025-10-16).
-  - Columns support starter deck “Raizan” lineup (Lightning focus).
-- **Supplementary JSON/Schema**:
-  - `.codex/docs/cards.schema.md` – canonical field names, enum values, keyword strings.
-  - `.codex/docs/azuki_cards_from_csv.json` – reference entries used by converter.
+- **Canonical JSON (authoritative)**: `data/cards.azuki.json` (to be created)
+  - Contains all cards for both starter decks:
+    - Lightning/Neutral Raizan deck.
+    - Water/Neutral Shao deck.
+  - Sole input for the generator that emits `cards_autogen.c/h`.
+- **Reference CSV**: `.codex/docs/azuki-tcg-cards.csv`
+  - Human-readable aid while authoring JSON; not consumed by tooling.
+- **Schema & Examples**:
+  - `.codex/docs/cards.schema.md` – strict schema definition.
+  - `card_examples.json` – minimal valid sample for converter smoke tests.
 
-## 2. CSV Column Mapping
+## 2. Legacy CSV Column Mapping (for reference only)
 
 | Column | Meaning | Engine Mapping |
 | --- | --- | --- |
@@ -28,14 +32,14 @@
 | `CHECKED?` | Author verification | Use to track schema compliance |
 
 Notes:
+- CSV values must be mirrored in the JSON; no automated CSV ingestion.
 - IKZ and token entries have empty cost/attack/health; `CardType=IKZ`.
-- `Ability` free text should be transformed into structured JSON (see §4).
+- `Ability` prose must be converted into structured programs (see §4).
 
 ## 3. Enum & Keyword Mapping
 ### Elements (`Element` enum)
 `Neutral`, `Lightning`, `Water`, `Fire`, `Earth`.
-
-CSV currently uses `Lightning`, `Neutral`; converter defaults to `Neutral` when blank.
+Current decks use `Lightning`, `Water`, and `Neutral`.
 
 ### Keywords (`KeywordFlags` bitmask)
 | CSV Token | Flag | Effect |
@@ -52,7 +56,7 @@ Keywords embedded in `Ability` text should be captured explicitly in structured 
 - `frozen`, `shocked` – present in rules doc; no occurrences yet in CSV.
 
 ## 4. Ability Authoring Workflow
-1. **Canonical JSON Blob**: For each card, create structured ability specification:
+1. **Canonical JSON Blob**: Author abilities directly in JSON:
    ```json
    {
      "abilities": [
@@ -67,17 +71,39 @@ Keywords embedded in `Ability` text should be captured explicitly in structured 
      ]
    }
    ```
-2. **Embedding in CSV**:
-   - Add new column `AbilityJSON` (or reuse `Ability` column with JSON string).
-   - Converter prioritizes JSON; falls back to heuristics if absent.
-3. **Converter Process**:
+2. **Structured Portal Examples**
+   - *Raizan Gate*: Portal entity, then attach a weapon from discard whose cost ≤ Gate Points.
+     ```json
+     {
+       "timing": "on_portal",
+       "program": [
+         {"op": "PORTAL", "from": "alley_slot", "to": "garden_slot"},
+         {"op": "CHOOSE_TARGET", "selector": "SELF_WEAPON_DISCARD_LEQ_GP"},
+         {"op": "MOVE_ZONE", "destination": "WEAPON_ATTACH_LAST_TARGET"},
+         {"op": "PAY_IKZ", "n": 0, "cap_by_gp": true}
+       ]
+     }
+     ```
+   - *Shao Gate*: Portal entity, then untap IKZ up to Gate Points.
+     ```json
+     {
+       "timing": "on_portal",
+       "program": [
+         {"op": "PORTAL", "from": "alley_slot", "to": "garden_slot"},
+         {"op": "CHOOSE_TARGET", "selector": "ALLY_IKZ_AREA_TAPPED"},
+         {"op": "UNTAP", "max_by_gp": true}
+       ]
+     }
+     ```
+     Selectors like `SELF_WEAPON_DISCARD_LEQ_GP` are provided in `targets.h`; flags `cap_by_gp`/`max_by_gp` tell the engine to bound effects using the portaled entity’s Gate Points.
+3. **Converter Invocation (JSON-only)**:
    ```bash
    python tools/azuki_cards_convert.py \
-       --in .codex/docs/azuki-tcg-cards.csv \
+       --in data/cards.azuki.json \
        --out_dir generated \
-       --format csv
+       --format json
    ```
-   Options: `--schema cards.schema.md`, `--summary out/cards_summary.json`.
+   - Converter enforces schema; CSV input is unsupported.
 4. **Validation**:
    - Run `tests/test_autogen_smoke`.
    - Add targeted unit tests for new keywords/opcodes.
@@ -90,13 +116,16 @@ Keywords embedded in `Ability` text should be captured explicitly in structured 
   - Entities: mix of cost 1–6 (e.g., `Crate Rat Kurobo`, `Indra`).
   - Weapons: `Lightning Shuriken`, `Black Jade Dagger`, `Raizan's Zanbato`.
   - Spells: `Lightning Orb`.
+- Example (Water deck):
+  - Leader: `Shao`.
+  - Gate: Water portal with IKZ untap clause.
+  - Entities emphasize resource control and support.
 - Deck builder should ensure Gate Points curve to support portal strategies (1–4).
 
 ## 6. Suggested Data Enhancements
-- Add explicit columns for `Keywords` (pipe-separated) and `Conditions`.
-- Break abilities into multiple rows or JSON array for readability.
-- Include `Timing` column to capture effect windows (on_play, when_equipping, response, etc.).
-- Track card art/asset references for future UI integration (out of scope now).
+- Provide JSON helpers/macros for recurring ability templates (e.g., draw/discard).
+- Maintain version field (`"version": "0.1.0"`) to track dataset revisions.
+- Include test fixtures (JSON snippets) to validate parser.
 
 ## 7. Quality Checks
 - **Converter Assertions**:
@@ -108,9 +137,9 @@ Keywords embedded in `Ability` text should be captured explicitly in structured 
   - Check ability text for ambiguous wording (document conversions in changelog).
 
 ## 8. Roadmap
-- Automate CSV → JSON transformation using templates.
-- Build lint script to detect missing keywords/elements.
-- Expand dataset with additional starter decks (Water, Fire, etc.).
+- Build scripting helpers to migrate legacy CSV into JSON schema.
+- Expand dataset with additional factions beyond Raizan/Shao.
+- Integrate schema validation into CI (e.g., `jsonschema` based test).
 - Version card data; embed semantic version in generated headers for compatibility.
 
 ---

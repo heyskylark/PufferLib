@@ -3,7 +3,7 @@
 ## 1. Training Overview
 - **Goal**: Train competitive Azuki agents via self-play on the C environment, using PettingZoo’s AEC API and PufferLib integration to support multi-head action policies and league-managed opponents.
 - **Key Components**
-  1. **C Environment Binding** (`puffer/azuki_puffer.h`, `binding.c`) – provides numpy buffer interface and action translation.
+  1. **C Environment Core & Binding** (`pufferlib/ocean/azuki/*.c`, `puffer/azuki_puffer.h`, `binding.c`) – houses engine logic plus NumPy-facing bridge.
   2. **PettingZoo Wrapper** (`pufferlib/ocean/azuki/env.py`, TBD) – high-level Python env that mirrors TicTacToe wrapper semantics.
   3. **Policy Architecture** – multi-head actor (ActionType + parameters) with shared encoder.
   4. **League Manager** – extended from `pufferlib/ocean/tictactoe/league.py` with Azuki-specific logic.
@@ -31,25 +31,23 @@
   - Provide per-head mask arrays in `env.info["mask_head_i"]`.
   - When only NO_OP is legal, masks for Heads 1–3 reduce to `[1,0,...]` or zero-out (policy should ignore using mask).
   - Inactive agent (not selected) receives all-zero masks, signaling no-op step (mirrors TicTacToe `legal_mask` behavior).
+  - During action selection, policy applies mask then performs per-head `argmax` (unless overridden by exploration strategy).
 
 ### 3.2 Policy Network
-- **Encoder**:
-  - Input: observation vector (flattened features).
-  - Architecture: MLP with layer norm or FiLM, e.g., `obs -> [512, ReLU] -> [512, ReLU]`.
-  - Optional gating on `is_response_window` / `actor_is_defender`.
+- **Encoder + Recurrent Core**:
+  - Observation vector passes through a lightweight pre-MLP (e.g., `obs -> LayerNorm -> Linear(4096) -> ReLU`).
+  - Output feeds a single-layer LSTM with hidden size 4096 (OpenAI Five style). Hidden/cell state shared between policy and value heads.
 - **Heads**:
-  - `pi_type`: linear output `R^13` with mask-aware logits.
-  - `pi_p0`, `pi_p1`, `pi_p2`: linear outputs matching head sizes.
-  - Legal masks applied by subtracting `1e9` from invalid logits before sampling.
-- **Value Function**: separate MLP or shared trunk; output scalar value.
-- **Distribution**:
-  - Sampling: sample head 0 from masked categorical; conditionally mask parameter heads based on chosen action type (if action invalid after sampling, resample or clamp via mask).
-  - Greedy evaluation: mask + argmax per head.
+  - Policy head splits into `pi_type`, `pi_p0`, `pi_p1`, `pi_p2` linear projections from the LSTM hidden state.
+  - Value head: small MLP (`hidden -> Linear(1024) -> ReLU -> Linear(1)`) consuming the same LSTM hidden output.
+- **Masking & Selection**:
+  - Masks applied by setting invalid logits to a large negative constant prior to selection.
+  - Default action selection: mask then `argmax` for each head (deterministic). Exploration achieved via ε-greedy or entropy injection before argmax if desired.
 - **NO_OP Handling**:
-  - Policy trained to choose NO_OP only in response windows; main-phase mask excludes NO_OP (mask=0).
+  - Policy only sees `ACT_NOOP` when response window is active; masks ensure main-phase logits for NO_OP are clamped.
 
 ## 4. Experience Collection
-- **Vectorized Envs**: Use PufferLib `VecEnv` to batch multiple Azuki games (e.g., 16 envs).
+- **Vectorized Envs**: Use PufferLib `VecEnv` to batch multiple Azuki games (≤12 environments to align with Ryzen 5900X cores).
 - **Rollout Length**: 128–256 steps recommended due to long episodes.
 - **Advantage Estimation**: GAE(λ), with gamma ~0.99, λ ~0.95.
 - **Reward Shaping (optional)**:
@@ -181,7 +179,6 @@
 
 ## 11. Future Enhancements
 - Multi-agent curriculum (mentor policies, scripted gate combos).
-- LSTM policy head to capture long-term dependencies (use PufferLib recurrent wrappers).
 - Mask compression (bitmasks) to reduce bandwidth for distributed training.
 - On-policy vs. off-policy comparison (IMPALA, V-trace).
 - Visual observation for potential transformer-based agents (long-term).

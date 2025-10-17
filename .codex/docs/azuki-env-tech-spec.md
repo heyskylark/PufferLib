@@ -10,7 +10,7 @@
   5. `actions.h`: `ActionType` enum + paramized action struct (multi-head interface).
   6. `puffer/azuki_puffer.h` & `puffer/binding.c`: PettingZoo/PufferLib bridge.
   7. `generated/cards_autogen.c/h`: generated card definitions (converter output).
-  8. `tools/azuki_cards_convert.py`: CSV/JSON → `CardDef[]` transpiler.
+  8. `tools/azuki_cards_convert.py`: JSON → `CardDef[]` transpiler (CSV unsupported in pipeline).
 - **Design Goals**
   - Pure data-driven card set (no per-card hard-coding).
   - Deterministic RNG (PCG/xorshift) and zero dynamic allocations in hot path.
@@ -23,7 +23,7 @@
 | --- | --- | --- |
 | `AZK_MAX_PLAYERS` | 2 | Fixed two-player game |
 | `AZK_MAX_GARDEN_SLOTS` / `AZK_MAX_ALLEY_SLOTS` | 5 | Board rows |
-| `AZK_MAX_HAND` | 12 (tunable) | Align with observation vector |
+| `AZK_MAX_HAND` | 30 (tunable) | Generous upper bound; matches observation/action head sizing |
 | `AZK_MAX_WEAPONS_PER_SLOT` | 4 | Multi-weapon attachments |
 | `AZK_MAX_ABILITIES_PER_CARD` | e.g. 4 | per-card ability hooks |
 | `AZK_MAX_EFFECT_PROG_LEN` | e.g. 16 | bytes per ability |
@@ -38,14 +38,14 @@ typedef struct {
     const char* name;
     Element element;
     int8_t ikz_cost;            // -1 for leader/gate/IKZ
-    int8_t gate_points;         // entities
+    int8_t gate_points;         // entities (set to -1 for cards without GP)
     struct { int8_t attack, health; } base;
     int8_t weapon_attack_bonus; // weapons
     uint32_t keyword_flags;     // charge|defender|carapace|infiltrate|godmode
     Ability abilities[AZK_MAX_ABILITIES_PER_CARD];
 } CardDef;
 ```
-`cards_autogen` populates these from CSV/JSON, mapping strings to enums/flags.
+`cards_autogen` populates these from JSON, mapping strings to enums/flags.
 
 ### 2.3 Runtime Instance (`CardInstance`)
 ```c
@@ -71,17 +71,31 @@ typedef struct {
 ### 2.4 Engine Container (`AzukiEngine`)
 Key fields:
 - Player-state arrays (per player):
-  - `deck[AZK_MAX_DECK]`, `hand[AZK_MAX_HAND]`, `garden[5]`, `alley[5]`,
-  - `ikz_pile[10]`, `ikz_area[10]`, `discard[64]` (grow as needed), `stack`.
+  - `deck[50]`, `hand[AZK_MAX_HAND]`, `garden[5]`, `alley[5]`,
+  - `ikz_pile[10]`, `ikz_area[10]`, `discard[51]`, `stack`.
 - `leader_id`, `gate_id`, `ikz_token_played`.
 - `phase`, `active_player`, `pending_response`, `response_owner`.
+- `starting_player` cached after mulligan randomization for logging and resets.
 - `combat_ctx` struct (attacker id, target kind/slot, damage cache).
+- `stack` array maintains pending response spells/abilities (LIFO) during defender windows.
 - RNG state (`uint64_t rng_state`).
 - `Action last_action`, event log buffer (optional).
 - `uint32_t turn_number`, `uint32_t step_counter` (for logs, determinism).
+- Discard pile capacity (`discard[51]`) covers maximum 50-deck cards plus optional IKZ token once spent.
 
 ## 3. Turn & Micro-State Machine
 ```
+PREGAME_MULLIGAN_P0
+  -> A starting player is chosen randomly (dice-roll equivalent); treat them as player 0 for mulligan flow
+  -> Active player selects MULLIGAN_KEEP or MULLIGAN_SHUFFLE
+  -> Shuffle resolution if needed, draw 7
+  -> Advance to PREGAME_MULLIGAN_P1
+
+PREGAME_MULLIGAN_P1
+  -> Opponent selects keep/shuffle
+  -> Apply choice, draw 7
+  -> Transition to START_OF_TURN with randomly selected starting player active
+
 START_OF_TURN
   -> UNTAP all, clear shocked where timer expired
   -> Run start_of_turn abilities (VM)
@@ -106,6 +120,7 @@ COMBAT_RESOLVE
   -> Execute combat damage (simultaneous), apply carapace, conditions
   -> Handle destroy/discard; check leader lethal (terminal)
   -> Run when_attacked / after_attacking hooks
+  -> Response stack resolves LIFO once; no alternating priority beyond defender window
   -> Switch back to MAIN; if terminal -> END_MATCH
 
 END_TURN
@@ -139,6 +154,7 @@ typedef struct {
 11 MULLIGAN_KEEP
 12 MULLIGAN_SHUFFLE
 ```
+Head sizes are defined via macros (`AZK_HEAD0_SIZE`, `AZK_HEAD1_SIZE`, etc.) so adjusting limits (e.g., hand capacity) only requires tweaking constants in `types.h`.
 Parameter semantics:
 - `PLAY_ENTITY_TO_*`: `{hand_idx, slot_idx, replace_flag, _}`
 - `PLAY_WEAPON`: `{hand_idx, target_kind(leader=0/entity=1), target_slot, _}`
@@ -168,12 +184,16 @@ Programs are evaluated sequentially; illegal cost or missing target aborts abili
 - `targets.h` defines selectors (e.g., `ALLY_ENTITY_GARDEN`, `OPP_LEADER`, `LAST_TARGET`, `WEAPON_RECIPIENT`).
 - Conditional flags (for `OP_IF`): `TARGET_IS_TAPPED`, `FIELD_GARDEN_FULL`, `SELF_HAS_CHARGE`, etc.
 - Portal scaling: `OP_DEAL_DAMAGE` with `scale_gp` flag uses target entity’s Gate Points.
+- Portal programs must cover:
+  - Raizan Gate: after `OP_PORTAL`, search discard for weapons with cost ≤ Gate Points and auto-attach to portaled entity (using selectors and `MOVE_ZONE` to `WEAPON_ATTACH`).
+  - Shao Gate: after `OP_PORTAL`, untap up to `gate_points` IKZ cards (`OP_UNTAP` with `max_by_gp` flag).
 
 ### 5.3 Once-Per-Turn Tracking
 - `OP_ONCE_PER_TURN_GUARD` caches `(instance_id, ability_index)` in per-turn hash table; cleared during `START_OF_TURN`.
 
 ## 6. Resource & Keyword Rules
 - **IKZ Economy**: IKZ area holds face-up cards; tapping pays costs; untapped each Start of Turn; IKZ token for second player once.
+  - IKZ pile size fixed at 10 cards per deck; token is single-use and moves to discard (slot reserved) after spent.
 - **Cooldown**: Entities entering Garden set `cooldown=1` unless they have `charge`; removed at next untap.
 - **Keywords**:
   - `charge`: bypass cooldown.
@@ -187,9 +207,9 @@ Programs are evaluated sequentially; illegal cost or missing target aborts abili
 
 ## 7. Data Pipeline & Card Authoring
 1. **Schema**: See `cards.schema.md` for fields and enum mappings.
-2. **Sources**: Accepts CSV (`azuki-tcg-cards.csv`) or JSON (structured abilities).
+2. **Source Format**: JSON dataset only (`cards.azuki.json`) with structured abilities.
 3. **Converter** (`tools/azuki_cards_convert.py`):
-   - Parses input, validates enums/keywords.
+   - Parses JSON, validates enums/keywords.
    - Serializes to `generated/cards_autogen.c/h` with `CardDef[]`.
    - Optionally outputs summary JSON for sanity checks.
 4. **Integration**:
@@ -236,7 +256,7 @@ int azk_is_terminal(const AzukiEngine*, PlayerId* winner);
 - Observations normalized to [-1,1] or [0,1] consistent with spec; use macros for scaling to keep Python binding simple.
 
 ## 10. Legal Action Masks
-- Implemented per head:
+- Implemented per head (head 0 is the main action type mask, heads 1–3 are auxiliary parameter masks):
   - **Head 0**: `uint8_t[13]`.
   - **Head 1**: sized to max parameter (e.g., 16 for hand slots).
   - **Head 2**: 8 (target kind/slot combos).
@@ -265,7 +285,7 @@ int azk_is_terminal(const AzukiEngine*, PlayerId* winner);
 
 ## 12. Determinism & Logging
 - RNG: single `uint64_t state`; functions `azk_rand_u32`, `azk_shuffle`.
-- Seed via `AzkConfig.seed` or `env_reset`.
+- Seed via `AzkConfig.seed` or `env_reset`; starting player randomized (dice-roll equivalent) using RNG.
 - Event Log Structure:
   ```
   struct AzkEvent {
@@ -314,9 +334,8 @@ int azk_is_terminal(const AzukiEngine*, PlayerId* winner);
 ## 17. Open Questions / TODOs
 - Finalize observation tensor size & normalization constants (document in binding + tests).
 - Decide on card ability DSL timeline vs. manual JSON specification.
-- Determine IKZ pile/card counts in dynamic decks (current spec assumes 10 IKZ + token).
-- Confirm stack behavior for nested responses (single defender opportunity vs. alternating).
-- Evaluate need for state serialization API (save/load).
+- Assess whether future rule updates require alternating response windows beyond current single defender action.
+- Plan state serialization API for future save/load support.
 
 ---
 **Maintainers**: Brandon, Codex Agent  

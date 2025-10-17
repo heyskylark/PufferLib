@@ -23,7 +23,7 @@ Developers need a reliable Azuki TCG environment to explore RL-based agents and 
 - PettingZoo AEC-compatible binding with multi-head (type + params) action interface.
 - Deterministic RNG, replay logging, and invariant-preserving legal action masks.
 - League-training ready policy plumbing (role masks, NO_OP semantics, opponent snapshots).
-- Tooling to ingest Azuki card data from CSV/JSON into generated code (`cards_autogen.c/h`).
+- Tooling to ingest Azuki card data from canonical JSON into generated code (`cards_autogen.c/h`).
 - Comprehensive test harness and milestone checklist (M0–M18) covering all mechanics.
 
 ### Should-Have
@@ -52,14 +52,14 @@ Developers need a reliable Azuki TCG environment to explore RL-based agents and 
 
 ## 6. Constraints & Assumptions
 - **Language/Runtime**: Core engine in C11; bindings assume CPython + NumPy; no GPU dependence within engine.
-- **Data Source**: `.codex/docs/azuki-tcg-cards.csv` is authoritative starter dataset; schema defined in `cards.schema.md`.
+- **Data Source**: Authoritative dataset maintained as JSON (`cards.azuki.json`) under `cards.schema.md`.
 - **Sandbox**: Engine must run in deterministic, offline environments (network disabled during training).
 - **Board Limits**: Garden/Alley capacity fixed at 5 slots each; `AZK_MAX_WEAPONS_PER_SLOT = 4`; deck size 50 + dedicated leader/gate/IKZ.
 - **Legal Play**: Illegal actions must be masked, not silently corrected; NO_OP available only in response/micro decision windows.
 
 ## 7. User Experience & Flows
 1. **Authoring Cards**
-   - Designer edits CSV/JSON.
+   - Designer edits the JSON dataset following `cards.schema.md`.
    - Run converter to emit `generated/cards_autogen.c/h`.
    - Rebuild engine; tests validate definitions (e.g., `test_autogen_smoke`).
 2. **Developing Engine Features**
@@ -75,7 +75,7 @@ Developers need a reliable Azuki TCG environment to explore RL-based agents and 
 
 ## 8. Dependencies & Existing Assets
 - Documentation: `.codex/docs/game-info.md` (rules), this spec bundle.
-- Data: `.codex/docs/azuki-tcg-cards.csv`, `cards.schema.md`, `card_examples.*`.
+- Data: JSON dataset (to be added), `.codex/docs/azuki-tcg-cards.csv` (reference), `cards.schema.md`, `card_examples.json`.
 - Code Skeletons: `include/azuki/*.h`, `puffer/azuki_puffer.h`, `puffer/binding.c`, `pufferlib/ocean/env_binding.h`.
 - Reference Training Framework: `pufferlib/ocean/tictactoe/{tictactoe.py, league.py}`.
 - Tooling: `tools/azuki_cards_convert.py` (converter).
@@ -88,9 +88,10 @@ Developers need a reliable Azuki TCG environment to explore RL-based agents and 
 - **Debug Difficulty**: Deterministic RNG, replay logs, and event tracing built-in from early milestones.
 
 ## 10. Future Enhancements
-- Plug-in scripting for card effects (mini DSL → bytecode).
+- Plug-in scripting for card effects (mini DSL → bytecode) to accelerate card authoring while guaranteeing valid opcode generation.
 - Visualization / web front-end for human playtests.
 - Automated balance analytics (match statistics, card win rates).
+- Human-vs-agent telemetry capture and replay storage to analyze learning gaps and support playtesting-driven training.
 - Cross-language bindings (Rust/Python) if community demand arises.
 
 ---
