@@ -42,7 +42,7 @@
   - Value head: small MLP (`hidden -> Linear(1024) -> ReLU -> Linear(1)`) consuming the same LSTM hidden output.
 - **Masking & Selection**:
   - Masks applied by setting invalid logits to a large negative constant prior to selection.
-  - Default action selection: mask then `argmax` for each head (deterministic). Exploration achieved via ε-greedy or entropy injection before argmax if desired.
+  - Default action selection: mask then `argmax` for each head (deterministic). Exploration achieved via ε-greedy or entropy injection before argmax.
 - **NO_OP Handling**:
   - Policy only sees `ACT_NOOP` when response window is active; masks ensure main-phase logits for NO_OP are clamped.
 
