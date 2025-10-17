@@ -193,7 +193,7 @@ static inline void c_step(CTicTacToe* env) {
     int action = env->actions[0]; // 0..8
     if (action < 0 || action > 8 || env->board[action] != EMPTY) {
         // Invalid move loses immediately
-        float reward = (env->current_player == 0) ? -1.0f : 1.0f;
+        float reward = -1.0f;
         ttt_end_game(env, reward);
         ttt_compute_observation(env);
         return;

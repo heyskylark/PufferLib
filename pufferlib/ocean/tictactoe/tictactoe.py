@@ -1,11 +1,10 @@
 import numpy as np
 import gymnasium as gym
 from pettingzoo import AECEnv
+from pettingzoo.utils.conversions import turn_based_aec_to_parallel
 import pufferlib
 
 from pufferlib.ocean.tictactoe import binding
-from pufferlib.emulation import TurnBasedParallelEnv
-
 
 class TicTacToe(AECEnv):
     """
@@ -18,7 +17,6 @@ class TicTacToe(AECEnv):
     metadata = {
         'render_modes': ['human'],
         'name': 'tictactoe_v0',
-        'is_parallelizable': True
     }
 
     def __init__(
@@ -143,7 +141,7 @@ class TicTacToe(AECEnv):
 
         # Check if game is over
         done = bool(self._terminals[0])
-        r = float(self._rewards[0])  # r is always from X's perspective
+        r = float(self._rewards[0]) 
 
         # Clear previous step rewards
         self.rewards = {agent: 0.0 for agent in self.possible_agents}
@@ -162,6 +160,11 @@ class TicTacToe(AECEnv):
             self.rewards[opponent_agent] = -r
             self._cumulative_rewards[acting_agent] += r
             self._cumulative_rewards[opponent_agent] += -r
+
+            s = self.rewards['X'] + self.rewards['O']
+            assert abs(s) < 1e-6, (
+                f"Non-zero-sum terminal: X+O={s}, rX={self.rewards['X']}, rO={self.rewards['O']}"
+            )
 
             # Mark pending so other agent terminates on their step
             self._pending_terminal = True
@@ -212,6 +215,6 @@ def make_tictactoe(buf=None, **kwargs):
     flip = kwargs.pop('flip_perspective', True)
     kwargs.pop('num_envs', None)
     env = TicTacToe(seed=seed, flip_perspective=flip, **kwargs)
-    env = TurnBasedParallelEnv(env)
+    env = turn_based_aec_to_parallel(env)
     env = pufferlib.MultiagentEpisodeStats(env)
     return pufferlib.emulation.PettingZooPufferEnv(env=env, buf=buf)
