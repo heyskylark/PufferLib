@@ -1,0 +1,46 @@
+Copies,Card ID,Card Name,Type,Attributes,Rarity,Card Type,Mana,Attack,Health,Gate,Ability,Total Points,CHECKED?
+1,STT01-001,Raizan,Lightning,"Raizan, Steelborn",L,Leader,,,20,,"[Once/Turn] *Pay 1 IKZ*: Give an entity equipped with a (Weapon) card ""Charge"" (Can attack the same turn it enters the Garden).",,
+1,STT01-002,Surge,Lightning,Gate,G,Gate,,,,,"TAP: Portal an untapped entity from the Alley into the Garden, then you may play from your discard pile a Weapon card with a cost equal to or less than the (Gate Power) of the portaled entity.",,YES
+4,STT01-003,Crate Rat Kurobo,Lightning,Black Jade,C,Entity,1,1,1,1,"[On Play] Put 3 cards from the top of your deck into your discard pile. If you have no (Weapon) cards in your discard pile when you activate this ability, put 5 cards instead.",3,YES
+4,STT01-004,Black Jade Recruit,Neutral,"Black Jade, Dawnling",C,Entity,1,1,1,1,"[On Play] You may discard a (Weapon) card: Look at the top 5 cards of your deck, reveal up to 1 (Weapon) card and add it to your hand, then bottom deck the rest in any order.",3,YES
+4,STT01-005,Alpine Prowler,Lightning,Bandit,C,Entity,2,1,1,2,[Alley Only Ability] You may sacrifice this card: Draw 3 and discard 2.,4,YES
+2,STT01-006,"Silver Current, Haruhi",Lightning,"Elder, Monk",R,Entity,2,1,2,1,[Once/Turn][When Attacking] Deal up to 1 damage to a leader or entity in your opponent's Garden.,4,YES
+4,STT01-007,Alley Guy,Neutral,"Dawnling, Alley Dweller",C,Entity,2,1,2,0,[On Play] You may discard 1: Draw 1.,3,YES
+4,STT01-008,Black Jade Crewleader,Lightning,"Black Jade, Steelborn",UC,Entity,3,2,2,1,"When equipped with a (Weapon) card, this card has +1 attack.",5,YES
+4,STT01-009,Weapon Master Yamada,Lightning,Steelborn,UC,Entity,4,2,2,2,"If there are 6 or more (Weapon) cards in your discard pile, this card has +2 attack.",6,YES
+2,STT01-010,Indra,Lightning,"Monk, Steelborn",R,Entity,5,3,2,3,Charge (Can attack the same turn it enters the Garden),8,YES
+2,STT01-011,Raizan,Lightning,"Raizan, Steelborn",SR,Entity,6,4,3,4,"As long as this card is in play, the card (Raizan's Zanbatou) has +5 attack instead of +4.",11,YES
+4,STT01-012,Lightning Shuriken,Lightning,"Shuriken, Shadowfang",C,Weapon,1,1,,,[When Attacking] Put the top card of your deck into your discard pile.,,YES
+4,STT01-013,Black Jade Dagger,Neutral,"Black Jade, Sword",C,Weapon,1,1,,,[When Equipping] You may deal 1 damage to your leader: This card gives an additional +1 attack.,,YES
+4,STT01-014,Tenshin,Neutral,Sword,C,Weapon,2,2,,,[When Equipping] Deal up to 1 damage to a leader.,,
+2,STT01-015,Tenraku,Neutral,Sword,UC,Weapon,3,3,,,"If you have 15 or more cards in your discard pile, this card gives an additional +1 attack.",,YES
+2,STT01-016,Raizan's Zanbato,Lightning,"Raizan, Sword",SR,Weapon,4,4,,,"[When Attacking] If equipped to a (Raizan) card, deal 1 damage to all entities in your opponent's Garden.",,YES
+4,STT01-017,Lightning Orb,Lightning,"Stormcaller, Orb",UC,Spell,1,,,,[Response] Deal up to 1 damage each to 2 different entities in your opponent's Garden.,,YES
+10,IKZ-001,IKZ Card,Neutral,,IKZ,,,,,,,,
+1,IKZ-002,Extra IKZ Card,Neutral,,IKZ,,,,,,,,
+63,,,,,,,,,,,,,
+,,,,,,,,,,,,,
+1,STT02-001,Shao,Water,"Shao, Driftward",L,Leader,,,20,,[Once/Turn][Response] *Pay 1 IKZ*: Reduce a leader's or entity's attack by 1 until the end of the turn.,,YES
+1,STT02-002,Hydromancy,Water,Gate,G,Gate,,,,,TAP Portal an untapped entity from the Alley into the Garden: You may untap IKZ up to the (Gate Power) of the portaled card.,,
+4,STT02-003,Hayabusa Itto,Water,"Elder, Sushi Chef",C,Entity,1,1,1,1,"[On Play] Look at the top 5 cards of your deck, reveal up to 1 (Watercrafting) card and add it to your hand, then bottom deck the rest in any order.",3,YES
+4,STT02-004,Rei,Neutral,Dawnling,C,Entity,1,1,2,0,,3,YES
+4,STT02-005,Hayabusa Saburo,Water,Sushi Chef,UC,Entity,1,1,1,1,"[On Play] If you played 2 other entities this turn, draw 1.",3,YES
+4,STT02-006,Foamback Crab,Water,"Crab, Rippleborn, Driftward",C,Entity,2,0,1,1,"""Defender"" (If this card is in the Garden, you may tap it to redirect an attack to this card)
+
+This card cannot take damage from card effects.",2,
+4,STT02-007,Benzai the Merchant,Water,"Frog, Wavecaller",C,Entity,2,1,2,0,[On Play] Draw 1.,3,YES
+4,STT02-008,"Serene Fist, Misaki",Water,Driftward,UC,Entity,2,2,1,0,This card cannot take damage from card effects.,3,YES
+4,STT02-009,Aya,Water,"Watercrafting, Water Painter",C,Entity,3,1,2,1,[On Play] You may return an entity with a cost of 2 more in your Garden to your hand: Return up to 1 entity with a cost of 2 or less in your opponent's Garden to its owner's hand.,4,YES
+2,STT02-010,Selis of the Shore,Water,Wavecaller,R,Entity,3,1,3,1,"[Garden Only Ability] When any entity is returned to its owner's hand, you may TAP this card, then draw 1.
+
+(This ability is not affected by Fatigue)",5,YES
+4,STT02-011,Bubblemancer,Water,Driftward,C,Entity,3,2,2,0,[Garden Only Ability] You may sacrifice this card: Choose an entity in your Garden; it cannot take damage from card effects until the start of your next turn.,4,YES
+4,STT02-012,Young Shao,Neutral,"Shao, Dawnling",UC,Entity,4,2,2,2,"If the number of entities in your Garden is 2 or more than the number of entities in your opponent's Garden, this card has +1 health and +1 attack.",6,YES
+2,STT02-013,Mizuki,Water,Wavecaller,SR,Entity,5,3,4,2,"[On Play] Look at the top 3 cards of your deck, reveal up to 1 (Water) type card with a cost of 2 or less and add it to your hand, then bottom deck the rest in any order. You may play the card in the Alley if it is an entity card.",9,YES
+2,STT02-014,Chilling Water,,"Subzero, Watercrafting",C,Spell,1,,,,"[Main] Choose an entity with a cost of 2 or less in your opponent's Garden; until the start of your next turn, it is Frozen (abilities are disabled and cannot attack or be damaged).",,
+4,STT02-015,Commune with Water,Water,Watercrafting,UC,Spell,2,,,,[Response] Return an entity with a cost of 3 or less in any Garden to its owner's hand.,,YES
+2,STT02-016,Water Orb,Water,"Watercrafting, Orb",R,Spell,1,,,,[Response] Discard 1: Reduce a leader's or entity's attack by 2 until the end of the turn.,,YES
+2,STT02-017,Shao's Perseverance,Water,"Watercrafting, Shao",SR,Spell,6,,,,"[Main] If your leader is (Shao), return all entities with a cost of 6 or less in your opponent's Garden to their owner's hand.",,
+10,IKZ-001,IKZ Card,Neutral,,IKZ,,,,,,,,
+1,IKZ-002,Extra IKZ Card,Neutral,,IKZ,,,,,,,,
+63,,,,,,,,,,,,,
