@@ -175,8 +175,8 @@ def main():
             else:
                 print('Result: AI wins!')
 
-            choice = input('Play again? [y/N]: ').strip().lower()
-            if choice != 'y':
+            choice = input('Play again? [Y/n]: ').strip().lower()
+            if choice == 'n':
                 break
     finally:
         vecenv.close()

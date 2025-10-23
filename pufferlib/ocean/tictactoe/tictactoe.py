@@ -41,7 +41,7 @@ class TicTacToe(AECEnv):
         self._terminals = np.zeros(1, dtype=np.bool_)
         self._truncations = np.zeros(1, dtype=np.bool_)
 
-        self._handle = binding.env_init(
+        self.c_envs = binding.env_init(
             self._obs,
             self._actions,
             self._rewards,
@@ -88,33 +88,31 @@ class TicTacToe(AECEnv):
         return obs
 
     def close(self):
-        binding.env_close(self._handle)
+        binding.env_close(self.c_envs)
 
     def render(self):
-        binding.env_render(self._handle)
+        binding.env_render(self.c_envs)
 
     def reset(self, seed=None, options=None):
         """
         Reset the game. Starting player is randomized in C code for balanced self-play.
         """
-        binding.env_reset(self._handle, int(seed or 0))
+        binding.env_reset(self.c_envs, int(seed or 0))
 
         # Get starting player from C environment and rotate active order so parallel wrapper stays in sync
-        info = binding.env_get(self._handle) or {}
-        cp_idx = int(info.get('current_player', 0))
+        info = binding.env_get(self.c_envs) 
+        cp_idx = int(info['current_player'])
         starting_agent = self.possible_agents[cp_idx]
         other_agent = self.possible_agents[1 - cp_idx]
         self._agent_selection = starting_agent
 
         self.agents = [starting_agent, other_agent]
-        self.rewards = {agent: 0.0 for agent in self.possible_agents}
-        self._cumulative_rewards = {agent: 0.0 for agent in self.possible_agents}
-        self.terminations = {agent: False for agent in self.possible_agents}
-        self.truncations = {agent: False for agent in self.possible_agents}
-        self.infos = {agent: {} for agent in self.possible_agents}
+        self.rewards = {agent: 0.0 for agent in self.agents}
+        self._cumulative_rewards = {agent: 0.0 for agent in self.agents}
+        self.terminations = {agent: False for agent in self.agents}
+        self.truncations = {agent: False for agent in self.agents}
+        self.infos = {agent: {} for agent in self.agents}
         self._pending_terminal = False
-
-        self._update_infos()
 
     def step(self, action):
         """
@@ -124,27 +122,22 @@ class TicTacToe(AECEnv):
         if self._pending_terminal:
             # Terminate the other agent after the game-ending move
             self.terminations[self._agent_selection] = True
-            self.truncations[self._agent_selection] = False
             if self._agent_selection in self.agents:
                 self.agents.remove(self._agent_selection)
             self._pending_terminal = False
-            self._update_infos()
             return
 
         if self.terminations.get(self._agent_selection, False):
             # Game already over, shouldn't be stepping
-            return
+            raise ValueError(f"Game already over for agent {self._agent_selection}")
 
         # Pass action to C environment
         self._actions[0] = int(action)
-        binding.env_step(self._handle)
+        binding.env_step(self.c_envs)
 
         # Check if game is over
         done = bool(self._terminals[0])
         r = float(self._rewards[0]) 
-
-        # Clear previous step rewards
-        self.rewards = {agent: 0.0 for agent in self.possible_agents}
 
         if done:
             # Terminate current agent who made the game-ending move
@@ -173,41 +166,9 @@ class TicTacToe(AECEnv):
             self._agent_selection = opponent_agent
         else:
             # Game continues - switch to next player
-            info = binding.env_get(self._handle) or {}
-            cp_idx = int(info.get('current_player', self._infer_current_from_board()))
+            info = binding.env_get(self.c_envs) 
+            cp_idx = int(info['current_player'])
             self._agent_selection = self.possible_agents[cp_idx]
-
-        self._update_infos()
-
-    def _infer_current_from_board(self) -> int:
-        """
-        Fallback to infer current player from board state.
-        Even number of pieces => X's turn (0), odd => O's turn (1).
-        """
-        filled = (self._obs != 0.0).sum()
-        return int(filled % 2)
-
-    def _update_infos(self):
-        """
-        Update action masks for all agents.
-
-        Key improvement for self-play training:
-        - Current player gets action mask with legal moves
-        - Waiting player gets all-zero mask (signals "don't act")
-        """
-        legal = (self._obs == 0.0)
-        legal_mask = legal.astype(np.int8)
-        zero_mask = np.zeros(9, dtype=np.int8)
-
-        for agent in self.possible_agents:
-            if agent == self._agent_selection and agent in self.agents:
-                # Current player: provide legal moves
-                self.infos[agent] = {
-                    'action_mask': legal_mask,
-                }
-            else:
-                # Waiting player: zero mask signals no action needed
-                self.infos[agent] = {}
 
 def make_tictactoe(buf=None, **kwargs):
     kwargs = dict(kwargs)

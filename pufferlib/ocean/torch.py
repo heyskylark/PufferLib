@@ -18,6 +18,46 @@ Recurrent = pufferlib.models.LSTMWrapper
 from pufferlib.pytorch import layer_init, _nativize_dtype, nativize_tensor
 import numpy as np
 
+class TicTacToe(nn.Module):
+    def __init__(self, env, hidden_size=128):
+        super().__init__()
+        self.hidden_size = hidden_size
+
+        print(env.single_observation_space)
+        num_obs = np.prod(env.single_observation_space.shape)
+        self.encoder = torch.nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(num_obs, hidden_size)),
+            nn.GELU(),
+        )
+
+        num_atns = env.single_action_space.n
+        self.decoder = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, num_atns), std=0.01)
+           
+        self.value = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1), std=1)
+
+    def forward_eval(self, observations, state=None):
+        hidden = self.encode_observations(observations)
+        action_mask = (observations == 0.0)
+
+        actions, value = self.decode_actions(hidden, action_mask.bool())
+        return actions, value
+
+    def forward(self, x, state=None):
+        return self.forward_eval(x, state)
+
+    def encode_observations(self, observations, state=None):
+        batch_size = observations.shape[0]
+        observations = observations.view(batch_size, -1)
+        return self.encoder(observations)
+
+    def decode_actions(self, hidden, action_mask):
+        action = self.decoder(hidden)
+        action = action.masked_fill(action_mask == 0, -1e9)
+        values = self.value(hidden)
+
+        return action, values
 
 class Boids(nn.Module):
     def __init__(self, env, cnn_channels=32, hidden_size=128, **kwargs):

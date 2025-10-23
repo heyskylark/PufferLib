@@ -16,7 +16,9 @@ struct Log {
     float score;
     float episode_return;
     float episode_length;
-    float winrate;
+    float x_winrate;
+    float o_winrate;
+    float draw_rate;
     float n;
 };
 
@@ -41,30 +43,37 @@ struct CTicTacToe {
     int random_open_depth;
 };
 
-static inline void ttt_allocate(CTicTacToe* env) {
+void init(CTicTacToe* env) {
+    env->current_player = rand() & 1; // 0 or 1
+    env->tick = 0;
+}
+
+void ttt_allocate(CTicTacToe* env) {
     env->observations = (float*)calloc(9, sizeof(float));
     env->actions = (int*)calloc(1, sizeof(int));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
 }
 
-static inline void ttt_free_allocated(CTicTacToe* env) {
+void ttt_free_allocated(CTicTacToe* env) {
     free(env->observations);
     free(env->actions);
     free(env->rewards);
     free(env->terminals);
 }
 
-static inline void ttt_add_log(CTicTacToe* env) {
+void ttt_add_log(CTicTacToe* env) {
     env->log.perf += (env->rewards[0] > 0.0f) ? 1.0f : 0.0f;
     env->log.score += env->rewards[0];
     env->log.episode_return += env->rewards[0];
     env->log.episode_length += env->tick;
-    env->log.winrate += (env->rewards[0] > 0.0f) ? 1.0f : 0.0f;
+    env->log.x_winrate += (env->current_player == 0 && env->rewards[0] > 0.0f) ? 1.0f : 0.0f;
+    env->log.o_winrate += (env->current_player == 1 && env->rewards[0] > 0.0f) ? 1.0f : 0.0f;
+    env->log.draw_rate += (env->rewards[0] == 0.0f) ? 1.0f : 0.0f;
     env->log.n += 1.0f;
 }
 
-static inline int ttt_check_winner(float* b) {
+int ttt_check_winner(float* b) {
     int lines[8][3] = {
         {0,1,2},{3,4,5},{6,7,8}, // rows
         {0,3,6},{1,4,7},{2,5,8}, // cols
@@ -85,18 +94,18 @@ static inline int ttt_check_winner(float* b) {
     return 2; // draw
 }
 
-static inline void ttt_compute_observation(CTicTacToe* env) {
+void ttt_compute_observation(CTicTacToe* env) {
     for (int i = 0; i < 9; i++) env->observations[i] = env->board[i];
 }
 
-static inline void c_close(CTicTacToe* env) {
+void c_close(CTicTacToe* env) {
     // Nothing heap-allocated inside env aside from client handled below
     if (IsWindowReady()) {
         CloseWindow();
     }
 }
 
-static inline int ttt_apply_random_opening(CTicTacToe* env) {
+int ttt_apply_random_opening(CTicTacToe* env) {
     if (env->random_open_depth <= 0 || env->random_open_prob <= 0.0f) {
         return 0;
     }
@@ -163,7 +172,7 @@ static inline int ttt_apply_random_opening(CTicTacToe* env) {
     return 0;
 }
 
-static inline void c_reset(CTicTacToe* env) {
+void c_reset(CTicTacToe* env) {
     env->tick = 0;
     env->terminals[0] = NOT_DONE;
     env->rewards[0] = 0.0f;
@@ -171,17 +180,17 @@ static inline void c_reset(CTicTacToe* env) {
     if (!ttt_apply_random_opening(env)) {
         // Randomize starting player to balance selfplay
         env->current_player = rand() & 1; // 0 or 1
-        ttt_compute_observation(env);
     }
+    ttt_compute_observation(env);
 }
 
-static inline void ttt_end_game(CTicTacToe* env, float reward) {
+void ttt_end_game(CTicTacToe* env, float reward) {
     env->rewards[0] = reward;
     env->terminals[0] = DONE;
     ttt_add_log(env);
 }
 
-static inline void c_step(CTicTacToe* env) {
+void c_step(CTicTacToe* env) {
     env->tick += 1;
     env->rewards[0] = 0.0f;
 
@@ -191,12 +200,13 @@ static inline void c_step(CTicTacToe* env) {
     }
 
     int action = env->actions[0]; // 0..8
-    if (action < 0 || action > 8 || env->board[action] != EMPTY) {
-        // Invalid move loses immediately
-        float reward = -1.0f;
-        ttt_end_game(env, reward);
-        ttt_compute_observation(env);
-        return;
+    if (action < 0 || action > 8) {
+        fprintf(stderr, "Exception: Invalid move: action out of bounds (action=%d).\n", action);
+        abort();
+    }
+    if (env->board[action] != EMPTY) {
+        fprintf(stderr, "Exception: Invalid move: cell not empty.\n");
+        abort();
     }
 
     // Place mark for current player
@@ -205,11 +215,11 @@ static inline void c_step(CTicTacToe* env) {
     env->board[action] = mark;
 
     int st = ttt_check_winner(env->board);
-    if (st == 1) { // X wins
+    if (st == 1) { 
         ttt_end_game(env, (mark == PLAYER_X) ? 1.0f : -1.0f);
         ttt_compute_observation(env);
         return;
-    } else if (st == -1) { // O wins
+    } else if (st == -1) { 
         ttt_end_game(env, (mark == PLAYER_O) ? 1.0f : -1.0f);
         ttt_compute_observation(env);
         return;
@@ -235,7 +245,7 @@ struct Client {
     int height;
 };
 
-static inline Client* ttt_make_client(int width, int height) {
+Client* ttt_make_client(int width, int height) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     client->width = width;
     client->height = height;
@@ -244,7 +254,7 @@ static inline Client* ttt_make_client(int width, int height) {
     return client;
 }
 
-static inline void c_render(CTicTacToe* env) {
+void c_render(CTicTacToe* env) {
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
     }
