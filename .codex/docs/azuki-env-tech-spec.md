@@ -1,21 +1,50 @@
 # Azuki TCG C Environment – Technical Specification
 
 ## 1. Architectural Overview
-- **Language**: C11, compiled as static/shared lib consumed by Python bindings.
+- **Language**: C11, compiled as static/shared lib consumed by Python bindings and a thin Raylib client.
 - **Core Modules**
   1. `types.h`: enums, constants, sizes (zones, limits, keywords, conditions).
   2. `cards.h`: `CardDef` (static card data) & `CardInstance` (runtime state).
   3. `effects.h` / `targets.h`: effect VM opcodes, selectors, condition predicates.
   4. `engine.h/.c`: game state container, turn loop, action execution, RNG.
   5. `actions.h`: `ActionType` enum + paramized action struct (multi-head interface).
-  6. `puffer/azuki_puffer.h` & `puffer/binding.c`: PettingZoo/PufferLib bridge.
-  7. `generated/cards_autogen.c/h`: generated card definitions (converter output).
-  8. `tools/azuki_cards_convert.py`: JSON → `CardDef[]` transpiler (CSV unsupported in pipeline).
+  6. `ecs/components.h`, `ecs/systems_*.c`: Flecs-friendly ECS definitions for statuses, query filters, damage/death, aura recalcs, mask staging, and event emission.
+  7. `puffer/azuki_puffer.h` & `puffer/binding.c`: PettingZoo/PufferLib bridge plus C ABI used by future Python+Raylib clients.
+  8. `generated/cards_autogen.c/h`: generated card definitions (converter output).
+  9. `tools/azuki_cards_convert.py`: JSON → `CardDef[]` transpiler (CSV unsupported in pipeline).
+ 10. `clients/raylib/` (planned): event-driven renderer built on raylib/raygui consuming the core’s event queue; compiled for desktop and WebAssembly.
 - **Design Goals**
   - Pure data-driven card set (no per-card hard-coding).
   - Deterministic RNG (PCG/xorshift) and zero dynamic allocations in hot path.
   - Explicit micro-state machine to support AEC (response windows, defender actions).
+  - ECS-based composition for mechanics (taunt, lifesteal, auras, freezes) so new keywords map to components/systems, not ad-hoc conditionals.
+  - Core emits semantic events that downstream adapters (RL bindings, raylib renderer, network server) consume at their own cadence.
   - Comprehensive invariant checking (internal debug asserts + fuzz tests).
+
+### 1.1 Build Targets & Toolchain
+- **Build system**: CMake + Presets (`native-debug`, `native-release`, `wasm-debug`, `wasm-release`). Presets toggle sanitizer flags, Flecs build options, and Raylib linkage.
+- **Dependencies**:
+  - `raylib` (graphics/input/audio) compiled twice: `PLATFORM_DESKTOP` for native harness and `PLATFORM_WEB` (via `emsdk`) for browser builds.
+  - `flecs` (ECS runtime), vendored or pulled via CMake `FetchContent`.
+  - `cJSON` (card data ingestion), `uthash` (registries/lookups).
+  - `raygui` (ship-ready UI widgets) and `rlImGui` (dev overlay) for the raylib harness.
+  - Asset helpers (external tooling): `rGuiLayout`, `rTexPacker`, `rFXGen`, `msdf-atlas-gen` for UI layout, atlases, sfx, and crisp fonts.
+  - `Emscripten SDK` for Web builds (`emcc`, `emrun`, `file packager`).
+- **WASM flow**:
+  1. Install/activate `emsdk` (`./emsdk install/activate latest && source emsdk_env.sh`).
+  2. Build raylib for web: `cd raylib/src && make -e PLATFORM=PLATFORM_WEB -B` (set `EMSDK_PATH` if needed).
+  3. Compile client/core bundle:
+     ```sh
+     emcc -o index.html \
+       src/main.c src/raylib_client.c \
+       -Iraylib/src -Lraylib/src -lraylib \
+       -DPLATFORM_WEB -sUSE_GLFW=3 -sASYNCIFY \
+       -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
+       -sALLOW_MEMORY_GROWTH=1 \
+       --preload-file assets@/assets
+     ```
+  4. Run locally with `emrun --no_browser --port 8080 index.html` (or any HTTP server).
+  - Notes: preload assets referenced by `Load*()`; browsers require HTTPS/HTTP (no `file://`); audio + blocking file I/O must respect Emscripten constraints.
 
 ## 2. Game State Representation
 ### 2.1 Constants & IDs (from `types.h`)
@@ -82,6 +111,31 @@ Key fields:
 - `Action last_action`, event log buffer (optional).
 - `uint32_t turn_number`, `uint32_t step_counter` (for logs, determinism).
 - Discard pile capacity (`discard[51]`) covers maximum 50-deck cards plus optional IKZ token once spent.
+
+### 2.5 ECS Component Model
+- **Runtime ECS**: `flecs` (or equivalent) mirrors the canonical arrays so combat/status logic stays composable. Each `CardInstance` owns an ECS entity id; zone arrays store entity refs instead of fat structs when possible.
+- **Core components**:
+  - `Stats{base_atk, base_hp, gate_points}`, `ComputedStats{atk, hp, max_hp}` recalculated post-auras.
+  - `Keywords{mask}`, `Conditions{mask}`, `Cooldown{ticks}`, `Tapped{bool}`.
+  - `Damage{amount, source}`, `Heal{amount, source}`, `DeadTag{}` as transient markers.
+  - `AuraEmitter{atk_delta, hp_delta, filter}`, `AuraTarget{}` plus `AuraCache` storing resolved buffs.
+  - `Lifesteal{}` / `Poisonous{}` / `Defender{}` / `Infiltrate{}` as tag components, mapping 1:1 to keyword flags.
+  - `Targetable{mask}` + `ResponseWindow{owner}` to drive defender choices.
+  - `EventBuffer` singleton storing last emitted `Event` array; `Intent` records pending player action (translates multi-head action into ECS components).
+- **Systems (ordered schedule)**:
+  1. `DrawSystem` / `IKZSystem` (start-of-turn economy updates).
+  2. `TargetingSystem` toggling `Targetable` and `DefenderEligible` tags (taunt/stealth/infiltrate logic).
+  3. `PlaySystem` (entities/weapons/spells) writing high-level `Action` results into ECS.
+  4. `AuraSystem` recomputing `ComputedStats` whenever `AuraEmitter` or zone membership changes.
+  5. `DamageSystem` consumes `Damage` component → applies HP deltas, emits `DamageApplied` events.
+  6. `DeathSystem` processes `DeadTag`, moves entities to discard, runs deathrattles via VM.
+  7. `CleanupSystem` clears transient components (`Damage`, `Heal`, `Intent`, once-per-turn guards).
+  8. `MaskSystem` & `ObservationSystem` read ECS state to build action masks/observations without branching on raw arrays.
+  9. `EventEmitSystem` flushes semantic events to the adapter queue.
+- **Advantages**:
+  - Adding a mechanic = new component + localized system (e.g., `FreezeSystem`, `PortalCooldownSystem`).
+  - Systems are testable in isolation; RL headless sim spins them without any render dependencies.
+  - The same ECS data feeds the raylib client for hover/highlight logic without duplicating state.
 
 ## 3. Turn & Micro-State Machine
 ```
@@ -283,6 +337,29 @@ int azk_is_terminal(const AzukiEngine*, PlayerId* winner);
   - Mirror TicTacToe template: manage agent ordering, apply flip-perspective if desired, and propagate legal masks in `infos`.
   - During defender response window, set `env.agent_selection` to defender; after `ACT_NOOP` or response, resume attacker flow.
 
+## 11.5 Ports, Event Bus & Adapters
+- **Core API**: strict trio of functions for simulators/UI/server: `reset(seed)`, `apply_intent(Intent*)`, `step_until_idle()` (process actions until queue empty). Each call returns:
+  - `Event events[MAX_EVENTS_PER_STEP]`
+  - `size_t event_count`
+  - `uint64_t rng_state_before/after`
+  - `uint64_t state_hash` (for validation/replays).
+- **Event schema** (subset):
+  | Type | Payload |
+  | --- | --- |
+  | `EV_CARD_DRAWN` | `{player, instance_id, deck_position}` |
+  | `EV_CARD_PLAYED` | `{player, zone, slot, card_id}` |
+  | `EV_DAMAGE_APPLIED` | `{source, target, amount, lethal}` |
+  | `EV_STATUS_APPLIED` | `{target, status_mask}` |
+  | `EV_ENTITY_DIED` | `{instance_id, zone}` |
+  | `EV_TURN_STARTED/ENDED` | `{player, turn_number}` |
+  | `EV_RESPONSE_REQUESTED` | `{attacker, defender_owner, window_id}` |
+- **Adapters**:
+  - **RL/PufferLib**: consumes observations immediately; optional event feed saved for dataset generation and debugging.
+  - **Raylib client (desktop + web)**: drives tweens/particle timelines from events while the core keeps sim time separate from render time. UI state (hover, drag, selection) lives entirely client-side and never feeds back into the core except via validated intents.
+  - **Server / Online play**: authoritative loop re-runs the same core, only transmitting intents and authoritative events/state hashes to clients (lockstep or turn-based RPC).
+- **Snapshot & restore**: `cg_serialize`/`cg_deserialize` operate on the ECS world + canonical arrays for RL vectorization and multiplayer rollback.
+- **Threading model**: core remains single-threaded/deterministic; adapters may multi-thread but must serialize intents before calling into the core.
+
 ## 12. Determinism & Logging
 - RNG: single `uint64_t state`; functions `azk_rand_u32`, `azk_shuffle`.
 - Seed via `AzkConfig.seed` or `env_reset`; starting player randomized (dice-roll equivalent) using RNG.
@@ -326,18 +403,36 @@ int azk_is_terminal(const AzukiEngine*, PlayerId* winner);
 - Replay loader re-applies logged events to reproduce bugs.
 
 ## 16. Deployment & Packaging
-- Build via CMake (existing skeleton).
-- Produce shared library `.so` consumed by Python package (wheel).
-- Install card data converter & schema docs alongside package.
-- Provide `pkg-config` or CMake config for third-party integration once stabilized.
+- **CMake Presets**:
+  - `native-debug`: Address/Undefined sanitizers, asserts on.
+  - `native-release`: `-O3 -march=native`, headless benchmarks.
+  - `wasm-debug` / `wasm-release`: cross-compiles raylib client + core through Emscripten; injects `-DPLATFORM_WEB`, `-sUSE_GLFW=3`, `-sASYNCIFY`, `-sMIN_WEBGL_VERSION=2`, `-sMAX_WEBGL_VERSION=2`, `-sALLOW_MEMORY_GROWTH=1`.
+- **Artifacts**:
+  - `libazuki_core.a/.so`: consumed by Python bindings and potential servers.
+  - `libazuki_core_wasm.a` + `index.{html,wasm,js}`: raylib harness for browsers.
+  - Python wheel bundles shared lib + bindings + generated `CardDef` table + schema docs.
+- **Raylib desktop build**: link against vendored `raylib-5.5_linux_amd64` archives for CLI smoke tests; keep out of RL wheels.
+- **Raylib web build**:
+  1. `git clone https://github.com/emscripten-core/emsdk && ./emsdk install/activate latest && source emsdk_env.sh`.
+  2. `cd raylib/src && make -e PLATFORM=PLATFORM_WEB -B` (set `EMSDK_PATH`, optionally `PYTHON_PATH`).
+  3. `cmake --preset wasm-release && cmake --build --preset wasm-release` (wraps the `emcc` command shown in §1.1).
+  4. `emrun --no_browser --port 8080 build/wasm-release/index.html` or serve via any static HTTP server (mandatory—`file://` won’t load due to browser sandboxing).
+  5. Package `assets/` via `--preload-file assets@/assets` (or `--embed-file` for tiny payloads). Large packs should be chunked to keep startup times reasonable.
+  6. Expect audio quirks: browsers require user interaction before playback; asynchronous file APIs necessitate `-sASYNCIFY` for blocking code.
+- **Tooling distribution**: ship `tools/azuki_cards_convert.py`, `cards.schema.md`, and documented `cmake --preset` flows; keep optional UI tooling references (rGuiLayout, rTexPacker, rFXGen) in docs rather than the wheel.
+- **Integration**: provide `pkg-config` or CMake `find_package(AzukiCore)` once API stabilizes; document WebSocket/intent format for future net-play adapters.
 
 ## 17. Open Questions / TODOs
 - Finalize observation tensor size & normalization constants (document in binding + tests).
 - Decide on card ability DSL timeline vs. manual JSON specification.
 - Assess whether future rule updates require alternating response windows beyond current single defender action.
 - Plan state serialization API for future save/load support.
+- Choose final ECS implementation strategy (vanilla Flecs vs. custom SoA reducer) and document how it coexists with array-based snapshotting.
+- Lock down event payload schema (IDs, batching, text for tooltips) so raylib, network, and RL logging adapters never diverge.
+- Define how Web builds fetch/preload large art assets (single pack vs. segmented, compression strategy).
+- Validate whether UI-only ECS (render/FX) should live inside the same repo or downstream consumer to keep this package lightweight.
 
 ---
 **Maintainers**: Brandon, Codex Agent  
-**Last Updated**: _2025-10-16_  
+**Last Updated**: _2025-10-25_  
 **Related Docs**: `azuki-product-spec.md`, `azuki-training-spec.md`, `azuki-env-milestones.md`, `cards.schema.md`
