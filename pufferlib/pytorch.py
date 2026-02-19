@@ -81,21 +81,26 @@ def _nativize_dtype(sample_dtype: np.dtype,
 
         return None, numpy_to_torch_dtype_dict[dtype], shape, offset, delta
     else:
+        # Respect the field offsets provided by the structured dtype; they may include padding/alignment.
         subviews = {}
         start_offset = offset
-        all_delta = 0
-        for name, (dtype, _) in structured_dtype.fields.items():
-            views, dtype, shape, offset, delta = _nativize_dtype(
-                sample_dtype, dtype, offset)
+        # Track the largest extent within this structured dtype so the parent can advance correctly.
+        max_extent = 0
+        for name, (dtype, field_offset) in structured_dtype.fields.items():
+            field_abs_offset = offset + field_offset
+            views, dtype, shape, _, delta = _nativize_dtype(
+                sample_dtype, dtype, field_abs_offset)
 
             if views is not None:
                 subviews[name] = views
             else:
-                subviews[name] = (dtype, shape, offset, delta)
+                subviews[name] = (dtype, shape, field_abs_offset, delta)
 
-            offset += delta
-            all_delta += delta
+            # delta is the size of this field; field_offset is relative to the start of this struct
+            max_extent = max(max_extent, field_offset + delta)
 
+        # Use the structured dtype's itemsize (includes padding) if available; otherwise fall back to max extent.
+        all_delta = structured_dtype.itemsize or max_extent
         return subviews, dtype, shape, start_offset, all_delta
 
 
